@@ -1,0 +1,5 @@
+{
+  "name": "Irwin Management System",
+  "description": "A comprehensive management accounting system with domain-restricted login, cash flow analysis, and project profitability tracking.",
+  "requestFramePermissions": []
+}
