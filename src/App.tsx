@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import Login from './components/Login';
 import Layout from './components/Layout';
@@ -7,6 +8,8 @@ import Analytics from './components/Analytics';
 import ProjectMaster from './components/ProjectMaster';
 import EmployeeMaster from './components/EmployeeMaster';
 import ResourcePlanning from './components/ResourcePlanning';
+import DataManagement from './components/DataManagement';
+import AIChat from './components/AIChat';
 import { AppProvider } from './context/AppContext';
 
 const AppContent: React.FC = () => {
@@ -35,11 +38,13 @@ const AppContent: React.FC = () => {
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard': return <Dashboard />;
-      case 'cf': return <CashFlow />;
+      case 'cf': return <CashFlow onNavigate={setActiveTab} />;
       case 'analytics': return <Analytics />;
       case 'projects': return <ProjectMaster />;
       case 'employees': return <EmployeeMaster />;
       case 'resource': return <ResourcePlanning />;
+      case 'data': return <DataManagement />;
+      case 'ai_chat': return <AIChat />; // New Route
       default: return <Dashboard />;
     }
   };

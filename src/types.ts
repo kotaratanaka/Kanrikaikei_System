@@ -4,6 +4,13 @@ export enum ContractType {
   Contractor = '業務委託',
 }
 
+export enum EmployeeRole {
+  Sales = '営業',
+  PM = 'PM',
+  SeniorEngineer = 'シニアエンジニア',
+  Engineer = 'エンジニア',
+}
+
 export enum ProjectType {
   Dev = '受託開発',
   Consulting = 'コンサルティング',
@@ -39,11 +46,24 @@ export enum CashFlowCategory {
   Other = 'その他',
 }
 
+export enum CashFlowType {
+  OneTime = '単発 (フロー)',
+  Recurring = 'サブスク (ストック)',
+  Variable = '変動 (タイムチャージ)',
+}
+
 export interface CashFlowItem {
   id: string;
   name: string;
   category: CashFlowCategory;
+  
+  // New Type Definition
+  type?: CashFlowType; 
+
+  // Basic Amount (Used for OneTime and Recurring)
   amount: number;
+  
+  // Legacy / Type mapping helper
   isRecurring: boolean;
   
   // Recurring Settings
@@ -54,6 +74,9 @@ export interface CashFlowItem {
   // One-time Settings
   paymentDate?: string; // YYYY-MM-DD (Specific Date)
   
+  // Variable Settings (Key: YYYY-MM, Value: Amount)
+  variableAmounts?: Record<string, number>;
+
   // Legacy support (to be migrated/ignored if paymentDate exists)
   targetMonth?: string; 
 }
@@ -61,11 +84,13 @@ export interface CashFlowItem {
 export interface MonthlyEmployeeData {
   cost: number;
   monthlyHours: number;
+  bonus?: number; // New: Bonus or Variable Reward for that month
 }
 
 export interface Employee {
   id: string;
   name: string;
+  role?: EmployeeRole; // New role field
   contractType: ContractType;
   defaultMonthlyCost: number; 
   defaultMonthlyHours: number; 
@@ -91,15 +116,30 @@ export interface WorkLog {
   actualHours: number;
 }
 
+// Flexible Billing Milestone for N-split payments
+export interface BillingMilestone {
+  id: string;
+  name: string;      // e.g. "着手金", "中間金", "完了金"
+  targetDate: string; // YYYY-MM-DD (Billing Date)
+  amount: number;    // Calculated Amount
+  ratio: number;     // Percentage (0-100)
+  
+  // Payment Terms
+  payDelay: number;  // 0=Current Month, 1=Next Month...
+  payDay: number;    // 99=End of Month, 1-31
+}
+
 // Detailed Billing Config
 export interface BillingConfig {
   // Flow (Fixed Reward) Logic
-  flowSplit: boolean; // True = Split Payment (Start/End)
-  flowStartRatio?: number; // %
-  flowStartDelay?: number; // 0=Current, 1=Next, 2=NextNext
-  flowStartPayDay?: number; // 0 or 99 = End of Month, 1-31 = Specific Day
+  flowSplit: boolean; // True = Use Milestones
+  flowMilestones: BillingMilestone[]; // New: Supports 1 to N milestones
   
-  flowEndDelay?: number;   // 0=Current, 1=Next, 2=NextNext (Used for Lump sum too)
+  // Deprecated fields (kept for type safety during migration if needed, but logic should prefer milestones)
+  flowStartRatio?: number; 
+  flowStartDelay?: number;
+  flowStartPayDay?: number;
+  flowEndDelay?: number;
   flowEndPayDay?: number;
   
   // Stock (Subscription) Logic
@@ -117,6 +157,10 @@ export interface Project {
   // Lead Source Information
   leadSourceCategory?: string;
   leadSourceDetail?: string;
+
+  // Sales Dates (New)
+  firstMeetingDate?: string; // YYYY-MM-DD
+  contractDate?: string;     // YYYY-MM-DD
   
   // Hybrid Model Configuration
   useFlow: boolean;
@@ -134,6 +178,7 @@ export interface Project {
   // Stock Parameters (e.g. Maintenance)
   stockAmount: number; // Monthly
   stockStartDate: string; // ISO Date
+  stockEndDate?: string; // ISO Date (Optional, for fixed term subscriptions)
 
   // Time Charge Parameters (Monthly Manual Input)
   // Key: "YYYY-MM", Value: Amount
@@ -163,6 +208,7 @@ export interface AppSettings {
   initialCashBalance: number;
   cashFlowItems: CashFlowItem[];
   leadSourceOptions?: Record<string, string[]>; // Dynamic lead sources
+  allowedDomains?: string[]; // New: Login restriction domains
 }
 
 export interface FiscalTerm {
@@ -172,12 +218,21 @@ export interface FiscalTerm {
   endMonth: string;
 }
 
+// Chat Types
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'model';
+  text: string;
+  timestamp: number;
+}
+
 export interface DataContextType {
   employees: Employee[];
   projects: Project[];
   workLogs: WorkLog[];
   settings: AppSettings;
   currentTerm: number;
+  chatHistory: ChatMessage[]; // New
   setCurrentTerm: (year: number) => void;
   addEmployee: (emp: Omit<Employee, 'id'>) => void;
   updateEmployee: (emp: Employee) => void;
@@ -187,4 +242,7 @@ export interface DataContextType {
   deleteProject: (id: string) => void;
   updateWorkLog: (log: WorkLog) => void;
   updateSettings: (settings: AppSettings) => void;
+  addChatMessage: (msg: ChatMessage) => void; // New
+  clearChatHistory: () => void; // New
+  importData: (data: any) => Promise<void>;
 }

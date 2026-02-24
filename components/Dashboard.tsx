@@ -1,27 +1,44 @@
 
 import React, { useMemo, useState } from 'react';
 import { useData } from '../context/AppContext';
-import { generateProjections, formatCurrency, getTermDateRange, getMonthlyRevenue, calculateExactMonths, getTotalDays } from '../utils';
+import { generateProjections, formatCurrency, getTermDateRange, getMonthlyRevenue, calculateExactMonths, getTotalDays, calculateDayDiff } from '../utils';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
   LineChart, Line, ComposedChart, Area, AreaChart, PieChart, Pie, Cell
 } from 'recharts';
-import { Target, Activity, Settings, CalendarClock, TrendingUp, AlertCircle, CheckCircle2, Info, X } from 'lucide-react';
-import { RevenueRecognitionMethod } from '../types';
+import { Target, Activity, Settings, CalendarClock, TrendingUp, AlertCircle, CheckCircle2, Info, X, Filter, Gauge, Timer } from 'lucide-react';
+import { RevenueRecognitionMethod, ProjectStatus, ProjectType } from '../types';
 
 const Dashboard: React.FC = () => {
   const { projects, employees, settings, workLogs, currentTerm, updateSettings } = useData();
   const [showTargetModal, setShowTargetModal] = useState(false);
   
+  // Toggle State: 'all' = Include PreOrder, 'contracted' = Ordered/Delivered only
+  const [viewMode, setViewMode] = useState<'all' | 'contracted'>('all');
+
+  // Business Division Filter
+  const [selectedProjectType, setSelectedProjectType] = useState<string>('all');
+
   // Breakdown Modal State
   const [breakdownPeriod, setBreakdownPeriod] = useState<{ label: string, startIdx: number, endIdx: number } | null>(null);
 
   const today = new Date();
   const { start, end } = useMemo(() => getTermDateRange(currentTerm), [currentTerm]);
-  const data = useMemo(() => generateProjections(projects, employees, workLogs, start, settings), [projects, employees, workLogs, start, settings]);
 
-  // Calculations
-  const annualRevenue = data.reduce((acc, curr) => acc + curr.revenue, 0);
+  // Filter Projects based on selected ProjectType
+  const filteredProjects = useMemo(() => {
+    return projects.filter(p => selectedProjectType === 'all' || p.projectType === selectedProjectType);
+  }, [projects, selectedProjectType]);
+
+  const data = useMemo(() => generateProjections(filteredProjects, employees, workLogs, start, settings), [filteredProjects, employees, workLogs, start, settings]);
+
+  // Helper to get revenue based on View Mode
+  const getRevenue = (d: any) => {
+      return viewMode === 'all' ? d.revenue : d.confirmedRevenue;
+  };
+
+  // Calculations based on View Mode
+  const annualRevenue = data.reduce((acc, curr) => acc + getRevenue(curr), 0);
   const annualTarget = data.reduce((acc, curr) => acc + curr.target, 0);
   const annualDiff = annualRevenue - annualTarget;
   const revenueAchievement = annualTarget > 0 ? (annualRevenue / annualTarget) * 100 : 0;
@@ -50,7 +67,7 @@ const Dashboard: React.FC = () => {
   const hLabel = hIndex === 0 ? '上期 (H1)' : '下期 (H2)';
   const hPeriodLabel = getPeriodLabel(hStart, hEnd);
   const hData = data.slice(hStart, hEnd);
-  const hRevenue = hData.reduce((acc, c) => acc + c.revenue, 0);
+  const hRevenue = hData.reduce((acc, c) => acc + getRevenue(c), 0);
   const hTarget = hData.reduce((acc, c) => acc + c.target, 0);
   const hDiff = hRevenue - hTarget;
   const hRate = hTarget > 0 ? (hRevenue / hTarget) * 100 : 0;
@@ -63,7 +80,7 @@ const Dashboard: React.FC = () => {
   const tLabel = `第${tIndex + 1}三分期 (T${tIndex + 1})`;
   const tPeriodLabel = getPeriodLabel(tStart, tEnd);
   const tData = data.slice(tStart, tEnd);
-  const tRevenue = tData.reduce((acc, c) => acc + c.revenue, 0);
+  const tRevenue = tData.reduce((acc, c) => acc + getRevenue(c), 0);
   const tTarget = tData.reduce((acc, c) => acc + c.target, 0);
   const tDiff = tRevenue - tTarget;
   const tRate = tTarget > 0 ? (tRevenue / tTarget) * 100 : 0;
@@ -76,10 +93,51 @@ const Dashboard: React.FC = () => {
   const qLabel = `第${qIndex + 1}四半期 (Q${qIndex + 1})`;
   const qPeriodLabel = getPeriodLabel(qStart, qEnd);
   const qData = data.slice(qStart, qEnd);
-  const qRevenue = qData.reduce((acc, c) => acc + c.revenue, 0);
+  const qRevenue = qData.reduce((acc, c) => acc + getRevenue(c), 0);
   const qTarget = qData.reduce((acc, c) => acc + c.target, 0);
   const qDiff = qRevenue - qTarget;
   const qRate = qTarget > 0 ? (qRevenue / qTarget) * 100 : 0;
+
+  // --- Delivery Turnover Rate (Total Monthly Throughput) ---
+  const deliveryTurnover = useMemo(() => {
+    // Filter Active Flow Projects within the current filter scope
+    const flowProjects = filteredProjects.filter(p => 
+        p.useFlow && 
+        p.flowAmount > 0 && 
+        p.flowStartDate && 
+        p.flowEndDate && 
+        p.status !== ProjectStatus.Lost &&
+        (viewMode === 'all' || p.status !== ProjectStatus.PreOrder)
+    );
+
+    if (flowProjects.length === 0) return 0;
+
+    // Sum up the "Monthly Average Revenue" of each project to get Total Monthly Throughput
+    const totalMonthlyThroughput = flowProjects.reduce((sum, p) => {
+        const months = calculateExactMonths(p.flowStartDate, p.flowEndDate);
+        return sum + (months > 0 ? p.flowAmount / months : 0);
+    }, 0);
+
+    return Math.floor(totalMonthlyThroughput); 
+  }, [filteredProjects, viewMode]);
+
+  // --- Sales Lead Time Analysis ---
+  const leadTimeStats = useMemo(() => {
+      const validProjects = filteredProjects.filter(p => 
+          p.status === ProjectStatus.Ordered || p.status === ProjectStatus.Delivered
+      ).map(p => {
+          return calculateDayDiff(p.firstMeetingDate, p.contractDate);
+      }).filter((d): d is number => d !== null && d >= 0);
+
+      if (validProjects.length === 0) return { avg: 0, min: 0, max: 0 };
+
+      const sum = validProjects.reduce((acc, val) => acc + val, 0);
+      const avg = Math.round(sum / validProjects.length);
+      const min = Math.min(...validProjects);
+      const max = Math.max(...validProjects);
+
+      return { avg, min, max };
+  }, [filteredProjects]);
 
 
   // Local state for target editing (Monthly)
@@ -115,24 +173,58 @@ const Dashboard: React.FC = () => {
     );
   };
 
-  // Lead Source Data Preparation
+  // Lead Source Data Preparation (Filter based on view mode & project type)
   const leadSourceData = useMemo(() => {
     const counts: Record<string, number> = {};
-    projects.forEach(p => {
-      // Only count if not Lost or Archived? Or count all? Usually count active or all.
-      // Let's count all to see full lead generation history.
+    filteredProjects.forEach(p => {
+      // Logic: always exclude Lost. 
+      // If viewMode is 'contracted', exclude PreOrder too.
+      if (p.status === ProjectStatus.Lost) return;
+      if (viewMode === 'contracted' && p.status === ProjectStatus.PreOrder) return;
+
       const category = p.leadSourceCategory || '不明・未設定';
       counts[category] = (counts[category] || 0) + 1;
     });
     return Object.keys(counts).map(name => ({ name, value: counts[name] }));
-  }, [projects]);
+  }, [filteredProjects, viewMode]);
+
+  // Project Type Revenue Data (Independent of Business Division Filter to show distribution, but respects View Mode)
+  const projectTypeRevenueData = useMemo(() => {
+    const revenueByType: Record<string, number> = {};
+    
+    projects.forEach(p => {
+        // Filter by View Mode & Status
+        if (p.status === ProjectStatus.Lost) return;
+        if (viewMode === 'contracted' && p.status === ProjectStatus.PreOrder) return;
+
+        // Calculate Annual Revenue for this project
+        let pRevenue = 0;
+        for (let i = 0; i < 12; i++) {
+            const d = new Date(start.getFullYear(), start.getMonth() + i, 1);
+            pRevenue += getMonthlyRevenue(p, d);
+        }
+
+        if (pRevenue > 0) {
+            const type = p.projectType || 'その他';
+            revenueByType[type] = (revenueByType[type] || 0) + pRevenue;
+        }
+    });
+
+    return Object.keys(revenueByType)
+        .map(type => ({ name: type, value: revenueByType[type] }))
+        .sort((a, b) => b.value - a.value); // Sort by revenue desc
+  }, [projects, viewMode, start]);
 
   // Breakdown Calculation Logic
   const getBreakdownData = (startIdx: number, endIdx: number) => {
     // If startIdx equals endIdx (single month view requested from click), adjust endIdx
     const actualEndIdx = (endIdx <= startIdx) ? startIdx + 1 : endIdx;
 
-    const breakdown = projects.map(p => {
+    const breakdown = filteredProjects.filter(p => {
+        if (p.status === ProjectStatus.Lost) return false;
+        if (viewMode === 'contracted' && p.status === ProjectStatus.PreOrder) return false;
+        return true;
+    }).map(p => {
         let periodRevenue = 0;
         // Iterate through the months in the selected period
         for (let i = startIdx; i < actualEndIdx; i++) {
@@ -169,37 +261,68 @@ const Dashboard: React.FC = () => {
   const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d', '#ffc658', '#d0ed57'];
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div className="flex items-center space-x-2 text-gray-500 bg-white px-4 py-2 rounded-full shadow-sm text-sm">
-           <CalendarClock className="w-4 h-4" />
-           <span>本日: {today.toLocaleDateString('ja-JP')}</span>
+    <div className="space-y-6 h-full overflow-y-auto pr-2">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div className="flex items-center gap-3 flex-wrap">
+             <div className="flex items-center space-x-2 text-gray-500 bg-white px-4 py-2 rounded-full shadow-sm text-sm border border-gray-100">
+                <CalendarClock className="w-4 h-4" />
+                <span>本日: {today.toLocaleDateString('ja-JP')}</span>
+             </div>
+             
+             {/* Business Division Filter */}
+             <div className="flex items-center space-x-2">
+               <select 
+                 className="px-3 py-1.5 rounded-full text-xs font-bold border border-gray-200 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
+                 value={selectedProjectType}
+                 onChange={(e) => setSelectedProjectType(e.target.value)}
+               >
+                 <option value="all">全事業部 (All)</option>
+                 {Object.values(ProjectType).map(t => <option key={t} value={t}>{t}</option>)}
+               </select>
+             </div>
+
+             {/* Toggle Switch */}
+             <div className="bg-gray-200 p-1 rounded-full flex items-center shadow-inner">
+                <button 
+                  onClick={() => setViewMode('all')}
+                  className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${viewMode === 'all' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  全案件 (見込込)
+                </button>
+                <button 
+                  onClick={() => setViewMode('contracted')}
+                  className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${viewMode === 'contracted' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  受注済のみ
+                </button>
+             </div>
         </div>
+
         <button onClick={initModal} className="flex items-center text-sm text-gray-600 hover:text-blue-600 bg-white px-4 py-2 rounded shadow-sm border border-gray-100 font-medium transition-colors">
            <Settings className="w-4 h-4 mr-2"/> 月次売上目標設定
         </button>
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
         {/* Annual */}
-        <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-100 relative overflow-hidden group">
+        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-100 relative overflow-hidden group">
           <div className="flex justify-between items-start mb-2">
             <div>
-              <p className="text-sm text-gray-500 mb-1 font-medium">年間売上 (全体)</p>
-              <h3 className="text-2xl font-bold text-gray-800">{formatCurrency(annualRevenue)}</h3>
+              <p className="text-xs text-gray-500 mb-1 font-medium">年間売上 ({selectedProjectType === 'all' ? '全体' : selectedProjectType})</p>
+              <h3 className="text-xl font-bold text-gray-800">{formatCurrency(annualRevenue)}</h3>
             </div>
-            <div className={`p-2 rounded-full ${revenueAchievement >= 100 ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-500'}`}>
-              <Target className="w-5 h-5" />
+            <div className={`p-1.5 rounded-full ${revenueAchievement >= 100 ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-500'}`}>
+              <Target className="w-4 h-4" />
             </div>
           </div>
           <div className="space-y-1">
-             <div className="flex justify-between text-xs text-gray-500">
+             <div className="flex justify-between text-[10px] text-gray-500">
                <span>目標: {formatCurrency(annualTarget)}</span>
                <span>{revenueAchievement.toFixed(1)}%</span>
              </div>
              <div className="flex justify-between items-center pt-2 border-t border-gray-100">
-               <span className="text-xs text-gray-400">目標乖離</span>
+               <span className="text-[10px] text-gray-400">目標乖離</span>
                {renderDiff(annualDiff)}
              </div>
           </div>
@@ -213,31 +336,30 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* Half-Year (Dynamic) */}
-        <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-100 relative overflow-hidden group">
+        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-100 relative overflow-hidden group">
           <div className="absolute top-0 left-0 w-1 h-full bg-blue-500"></div>
           <div className="flex justify-between items-start mb-2">
             <div>
-              <div className="flex items-center text-sm text-gray-500 mb-1 font-medium">
+              <div className="flex items-center text-xs text-gray-500 mb-1 font-medium">
                   {hLabel}
-                  <span className="ml-2 text-xs bg-gray-100 px-1 rounded text-gray-400 font-normal">({hPeriodLabel})</span>
+                  <span className="ml-1 text-[10px] bg-gray-100 px-1 rounded text-gray-400 font-normal">({hPeriodLabel})</span>
               </div>
-              <h3 className="text-2xl font-bold text-gray-800">{formatCurrency(hRevenue)}</h3>
+              <h3 className="text-xl font-bold text-gray-800">{formatCurrency(hRevenue)}</h3>
             </div>
-            <div className="bg-blue-50 text-blue-600 p-2 rounded-full">
-              <TrendingUp className="w-5 h-5" />
+            <div className="bg-blue-50 text-blue-600 p-1.5 rounded-full">
+              <TrendingUp className="w-4 h-4" />
             </div>
           </div>
           <div className="space-y-1">
-             <div className="flex justify-between text-xs text-gray-500">
+             <div className="flex justify-between text-[10px] text-gray-500">
                <span>目標: {formatCurrency(hTarget)}</span>
                <span className={hRate >= 100 ? 'text-blue-600 font-bold' : ''}>{hRate.toFixed(1)}%</span>
              </div>
              <div className="flex justify-between items-center pt-2 border-t border-gray-100">
-               <span className="text-xs text-gray-400">目標乖離</span>
+               <span className="text-[10px] text-gray-400">目標乖離</span>
                {renderDiff(hDiff)}
              </div>
           </div>
-          {/* Breakdown Button */}
           <button 
             onClick={() => setBreakdownPeriod({ label: hLabel, startIdx: hStart, endIdx: hEnd })}
             className="absolute top-2 right-2 text-gray-300 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -247,27 +369,27 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* Trimester (Dynamic) */}
-        <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-100 relative overflow-hidden group">
+        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-100 relative overflow-hidden group">
           <div className="absolute top-0 left-0 w-1 h-full bg-purple-500"></div>
           <div className="flex justify-between items-start mb-2">
             <div>
-              <div className="flex items-center text-sm text-gray-500 mb-1 font-medium">
+              <div className="flex items-center text-xs text-gray-500 mb-1 font-medium">
                   {tLabel}
-                  <span className="ml-2 text-xs bg-gray-100 px-1 rounded text-gray-400 font-normal">({tPeriodLabel})</span>
+                  <span className="ml-1 text-[10px] bg-gray-100 px-1 rounded text-gray-400 font-normal">({tPeriodLabel})</span>
               </div>
-              <h3 className="text-2xl font-bold text-gray-800">{formatCurrency(tRevenue)}</h3>
+              <h3 className="text-xl font-bold text-gray-800">{formatCurrency(tRevenue)}</h3>
             </div>
-            <div className="bg-purple-50 text-purple-600 p-2 rounded-full">
-              <Activity className="w-5 h-5" />
+            <div className="bg-purple-50 text-purple-600 p-1.5 rounded-full">
+              <Activity className="w-4 h-4" />
             </div>
           </div>
           <div className="space-y-1">
-             <div className="flex justify-between text-xs text-gray-500">
+             <div className="flex justify-between text-[10px] text-gray-500">
                <span>目標: {formatCurrency(tTarget)}</span>
                <span className={tRate >= 100 ? 'text-purple-600 font-bold' : ''}>{tRate.toFixed(1)}%</span>
              </div>
              <div className="flex justify-between items-center pt-2 border-t border-gray-100">
-               <span className="text-xs text-gray-400">目標乖離</span>
+               <span className="text-[10px] text-gray-400">目標乖離</span>
                {renderDiff(tDiff)}
              </div>
           </div>
@@ -280,27 +402,27 @@ const Dashboard: React.FC = () => {
         </div>
 
          {/* Quarter (Dynamic) */}
-         <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-100 relative overflow-hidden group">
+         <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-100 relative overflow-hidden group">
           <div className="absolute top-0 left-0 w-1 h-full bg-orange-500"></div>
           <div className="flex justify-between items-start mb-2">
             <div>
-              <div className="flex items-center text-sm text-gray-500 mb-1 font-medium">
+              <div className="flex items-center text-xs text-gray-500 mb-1 font-medium">
                   {qLabel}
-                  <span className="ml-2 text-xs bg-gray-100 px-1 rounded text-gray-400 font-normal">({qPeriodLabel})</span>
+                  <span className="ml-1 text-[10px] bg-gray-100 px-1 rounded text-gray-400 font-normal">({qPeriodLabel})</span>
               </div>
-              <h3 className="text-2xl font-bold text-gray-800">{formatCurrency(qRevenue)}</h3>
+              <h3 className="text-xl font-bold text-gray-800">{formatCurrency(qRevenue)}</h3>
             </div>
-            <div className="bg-orange-50 text-orange-600 p-2 rounded-full">
-              <CheckCircle2 className="w-5 h-5" />
+            <div className="bg-orange-50 text-orange-600 p-1.5 rounded-full">
+              <CheckCircle2 className="w-4 h-4" />
             </div>
           </div>
           <div className="space-y-1">
-             <div className="flex justify-between text-xs text-gray-500">
+             <div className="flex justify-between text-[10px] text-gray-500">
                <span>目標: {formatCurrency(qTarget)}</span>
                <span className={qRate >= 100 ? 'text-orange-600 font-bold' : ''}>{qRate.toFixed(1)}%</span>
              </div>
              <div className="flex justify-between items-center pt-2 border-t border-gray-100">
-               <span className="text-xs text-gray-400">目標乖離</span>
+               <span className="text-[10px] text-gray-400">目標乖離</span>
                {renderDiff(qDiff)}
              </div>
           </div>
@@ -311,12 +433,57 @@ const Dashboard: React.FC = () => {
              <Info className="w-4 h-4" />
            </button>
         </div>
+
+        {/* KPI: Delivery Velocity (Total Monthly Throughput) */}
+        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-100 relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-1 h-full bg-teal-500"></div>
+          <div className="flex justify-between items-start mb-2">
+            <div>
+              <div className="flex items-center text-xs text-gray-500 mb-1 font-medium">
+                  月平均売上 (回転率)
+              </div>
+              <h3 className="text-xl font-bold text-gray-800">{formatCurrency(deliveryTurnover)}</h3>
+            </div>
+            <div className="bg-teal-50 text-teal-600 p-1.5 rounded-full">
+              <Gauge className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="space-y-1 mt-3">
+             <div className="text-[10px] text-gray-400 leading-tight">
+               各案件の(売上÷期間)を積み上げ<br/>
+               ※ フロー型案件の月商合計
+             </div>
+          </div>
+        </div>
+
+        {/* KPI: Average Lead Time */}
+        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-100 relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
+          <div className="flex justify-between items-start mb-2">
+            <div>
+              <div className="flex items-center text-xs text-gray-500 mb-1 font-medium">
+                  平均リードタイム
+              </div>
+              <h3 className="text-xl font-bold text-gray-800">{leadTimeStats.avg} <span className="text-sm font-normal">日</span></h3>
+            </div>
+            <div className="bg-indigo-50 text-indigo-600 p-1.5 rounded-full">
+              <Timer className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="space-y-1 pt-1">
+             <div className="flex justify-between text-[10px] text-gray-500 border-t border-gray-100 pt-2">
+               <span>Min: {leadTimeStats.min}日</span>
+               <span>Max: {leadTimeStats.max}日</span>
+             </div>
+             <div className="text-[10px] text-gray-400">商談日 → 契約日</div>
+          </div>
+        </div>
       </div>
 
       {/* Main Charts & Analysis */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         
-        {/* Revenue Forecast (Stacked Bar: Confirmed + Potential) */}
+        {/* Revenue Forecast (Stacked Bar: Actual + Forecast + Potential) */}
         <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-100 lg:col-span-2">
           <h3 className="text-lg font-bold text-gray-800 mb-4">売上予測 vs 目標 ({currentTerm}年11月期)</h3>
           <p className="text-xs text-gray-500 mb-2">※ グラフをクリックすると月ごとの内訳を確認できます。</p>
@@ -328,9 +495,13 @@ const Dashboard: React.FC = () => {
                 <YAxis fontSize={12} tickFormatter={(val) => `${val/10000}万`} />
                 <Tooltip formatter={(val: number) => formatCurrency(val)} />
                 <Legend />
-                {/* Stacked Bars */}
-                <Bar dataKey="confirmedRevenue" name="売上見込 (受注済)" stackId="a" fill="#3b82f6" barSize={30} />
-                <Bar dataKey="potentialRevenue" name="売上見込 (提案中)" stackId="a" fill="#bfdbfe" barSize={30} />
+                {/* Stacked Bars with Visual Distinction for Actual vs Forecast */}
+                <Bar dataKey="revenueActual" name="売上実績 (過去月)" stackId="a" fill="#1e3a8a" barSize={30} />
+                <Bar dataKey="revenueForecast" name="売上見込 (受注済)" stackId="a" fill="#3b82f6" barSize={30} />
+                {/* Only show Potential if View Mode is 'all' */}
+                {viewMode === 'all' && (
+                    <Bar dataKey="potentialRevenue" name="売上見込 (提案中)" stackId="a" fill="#bfdbfe" barSize={30} />
+                )}
                 <Line type="monotone" dataKey="target" name="目標" stroke="#ef4444" strokeWidth={2} dot={false} />
               </ComposedChart>
             </ResponsiveContainer>
@@ -355,6 +526,32 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
 
+        {/* Project Type Revenue Distribution (New) */}
+        <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
+           <h3 className="text-lg font-bold text-gray-800 mb-4">事業別 売上構成比 ({currentTerm}年11月期)</h3>
+           <div className="h-72 flex items-center justify-center">
+             <ResponsiveContainer width="100%" height="100%">
+               <PieChart>
+                 <Pie
+                   data={projectTypeRevenueData}
+                   cx="50%"
+                   cy="50%"
+                   label={({ name, percent }) => percent > 0.02 ? `${name} ${(percent * 100).toFixed(0)}%` : ''} 
+                   outerRadius={80}
+                   fill="#82ca9d"
+                   dataKey="value"
+                 >
+                   {projectTypeRevenueData.map((entry, index) => (
+                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                   ))}
+                 </Pie>
+                 <Tooltip formatter={(val: number) => formatCurrency(val)} />
+                 <Legend />
+               </PieChart>
+             </ResponsiveContainer>
+           </div>
+        </div>
+
         {/* Lead Source Distribution */}
         <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-100">
            <h3 className="text-lg font-bold text-gray-800 mb-4">リード獲得経路 (案件数割合)</h3>
@@ -365,8 +562,7 @@ const Dashboard: React.FC = () => {
                    data={leadSourceData}
                    cx="50%"
                    cy="50%"
-                   labelLine={false}
-                   label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                   label={({ name, percent }) => percent > 0.02 ? `${name} ${(percent * 100).toFixed(0)}%` : ''}
                    outerRadius={80}
                    fill="#8884d8"
                    dataKey="value"
@@ -432,7 +628,7 @@ const Dashboard: React.FC = () => {
                  <div>
                    <h3 className="text-lg font-bold text-gray-800">売上内訳: {breakdownPeriod.label}</h3>
                    <p className="text-xs text-gray-500">
-                     固定報酬案件は、選択されたロジック(期間按分または請求基準)に基づいて計算されます。
+                     固定報酬案件は、すべて請求基準(完了時またはマイルストーン)で計上されます。
                    </p>
                  </div>
                  <button onClick={() => setBreakdownPeriod(null)} className="text-gray-400 hover:text-gray-600">
@@ -453,13 +649,14 @@ const Dashboard: React.FC = () => {
                     <tbody className="bg-white divide-y divide-gray-200">
                        {getBreakdownData(breakdownPeriod.startIdx, breakdownPeriod.endIdx).map(p => {
                            const isFlow = p.useFlow;
-                           const isMilestone = p.revenueMethod === RevenueRecognitionMethod.Milestone;
+                           const isSplit = p.billingConfig?.flowSplit;
+                           
                            return (
                              <tr key={p.id}>
                                <td className="px-4 py-2 text-sm">
                                   <div className="font-bold text-gray-800">{p.clientName}</div>
                                   <div className="text-xs text-gray-500">{p.projectName}</div>
-                                  {p.status === 'PreOrder' && <span className="text-[10px] bg-yellow-100 text-yellow-800 px-1 rounded ml-1">提案中</span>}
+                                  {p.status === ProjectStatus.PreOrder && <span className="text-[10px] bg-yellow-100 text-yellow-800 px-1 rounded ml-1">提案中</span>}
                                </td>
                                <td className="px-4 py-2 text-xs">
                                  {p.useFlow && <span className="mr-1">フロー</span>}
@@ -472,13 +669,13 @@ const Dashboard: React.FC = () => {
                                <td className="px-4 py-2 text-xs text-gray-500">
                                   {p.useTimeCharge ? '月次従量入力' : (
                                     isFlow ? (
-                                        isMilestone ? (
-                                            <span className="text-orange-600 font-medium">請求基準</span>
+                                        isSplit ? (
+                                            <span className="text-orange-600 font-medium">請求基準 (分割)</span>
                                         ) : (
-                                            <span>月割按分</span>
+                                            <span className="text-gray-600">請求基準 (一括)</span>
                                         )
                                     ) : (
-                                        <span>月額固定 × 月数</span>
+                                        <span>月額固定 (Sub)</span>
                                     )
                                   )}
                                </td>

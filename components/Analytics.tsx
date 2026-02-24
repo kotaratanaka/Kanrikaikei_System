@@ -1,17 +1,30 @@
 
 import React, { useMemo, useState } from 'react';
 import { useData } from '../context/AppContext';
-import { getProjectActualCost, formatCurrency, getMonthlyRevenue, parseLocalDate, getEmployeeMonthlyData, getProjectMonthlyCost } from '../utils';
-import { Project, WorkLog } from '../types';
+import { getProjectActualCost, formatCurrency, getMonthlyRevenue, parseLocalDate, getEmployeeMonthlyData, getProjectMonthlyCost, getSeniorEngineerCommission, calculateExactMonths, calculateDayDiff } from '../utils';
+import { Project, WorkLog, ProjectStatus } from '../types'; // Added ProjectStatus
 import { Info, X, Calculator } from 'lucide-react';
+
+interface ProjectMetric extends Project {
+  totalRevenue: number;
+  totalCost: number;
+  profit: number;
+  profitMargin: number;
+  laborShare: number;
+  avgMonthlyRevenue: number; // New metric: Turnover rate
+  salesLeadTime: number | null;
+}
 
 const Analytics: React.FC = () => {
   const { projects, employees, settings, workLogs, currentTerm } = useData();
-  const [selectedProjectForCost, setSelectedProjectForCost] = useState<Project | null>(null);
+  const [selectedProjectForCost, setSelectedProjectForCost] = useState<ProjectMetric | null>(null);
 
   // Calculate project metrics based on HYBRID (Actuals + Plan) logic
   const projectMetrics = useMemo(() => {
-    return projects.map(p => {
+    return projects
+      // Filter: Only Ordered or Delivered projects (exclude PreOrder/Lost)
+      .filter(p => p.status === ProjectStatus.Ordered || p.status === ProjectStatus.Delivered)
+      .map(p => {
       // Iterate through months of the fiscal term
       // Term starts Dec prev year
       const startYear = currentTerm - 1;
@@ -41,13 +54,27 @@ const Analytics: React.FC = () => {
       const profitMargin = totalRevenue > 0 ? (profit / totalRevenue) * 100 : 0;
       const laborShare = totalRevenue > 0 ? (totalCost / totalRevenue) * 100 : 0;
 
+      // Avg Monthly Revenue (Delivery Velocity) for Flow Projects
+      let avgMonthlyRevenue = 0;
+      if (p.useFlow && p.flowStartDate && p.flowEndDate && p.flowAmount > 0) {
+          const months = calculateExactMonths(p.flowStartDate, p.flowEndDate);
+          if (months > 0) {
+              avgMonthlyRevenue = p.flowAmount / months;
+          }
+      }
+
+      // Sales Lead Time
+      const salesLeadTime = calculateDayDiff(p.firstMeetingDate, p.contractDate);
+
       return {
         ...p,
         totalRevenue,
         totalCost,
         profit,
         profitMargin,
-        laborShare
+        laborShare,
+        avgMonthlyRevenue,
+        salesLeadTime
       };
     }).sort((a, b) => b.totalRevenue - a.totalRevenue); // Sort by revenue
   }, [projects, employees, workLogs, currentTerm]);
@@ -103,6 +130,24 @@ const Analytics: React.FC = () => {
                  details = "稼働予定なし";
              }
         }
+
+        // Check for Commission (Bonus) specifically to add to details
+        if (project.useFlow && project.flowEndDate) {
+            const end = parseLocalDate(project.flowEndDate);
+            const accrualMonth = new Date(end.getFullYear(), end.getMonth() + 1, 1);
+            
+            if (accrualMonth.getFullYear() === year && accrualMonth.getMonth() === month) {
+                 const commission = getSeniorEngineerCommission(project, employees);
+                 if (commission > 0) {
+                     details += details ? `, ` : '';
+                     details += `内、シニアエンジニア賞与: ${formatCurrency(commission)}`;
+                     // If cost was 0 (no logs) but has commission, ensure label is set
+                     if (method === '実績なし' || method === '予定なし') {
+                         method = '賞与のみ';
+                     }
+                 }
+            }
+        }
         
         breakdown.push({
             monthLabel: `${year}/${month + 1}`,
@@ -115,24 +160,26 @@ const Analytics: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 h-full overflow-y-auto pr-2">
       <div className="flex justify-between items-center">
         <div>
           <h2 className="text-xl font-bold text-gray-800">プロジェクト別収支分析 ({currentTerm}年11月期)</h2>
-          <p className="text-sm text-gray-500 mt-1">※ 売上は税抜計算、原価は過去月は実績、当月以降は予定(アサイン計画)に基づいて計算されています。</p>
+          <p className="text-sm text-gray-500 mt-1">※ 受注済(デリバリー中・完了)案件のみ表示しています。売上は税抜、原価はハイブリッド(過去=実績/未来=予定)です。</p>
         </div>
         <div className="text-sm bg-white p-2 rounded border shadow-sm">
           目標粗利率: <span className="font-bold">{targetMarginMin}% - {targetMarginMax}%</span>
         </div>
       </div>
 
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
+      <div className="bg-white rounded-lg shadow overflow-x-auto">
+        <table className="min-w-[1100px] w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">案件名</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">タイプ</th>
+              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">営業リードタイム</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">期中売上 (税抜)</th>
+              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">月平均売上 (回転率)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">期中原価 (見込込)</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">粗利</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">粗利率</th>
@@ -153,8 +200,15 @@ const Analytics: React.FC = () => {
                 <td className="px-6 py-4 whitespace-nowrap">
                   <span className="px-2 py-1 bg-gray-100 rounded-full text-xs text-gray-600">{p.projectType}</span>
                 </td>
+                <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-600">
+                  {p.salesLeadTime !== null ? `${p.salesLeadTime}日` : '-'}
+                </td>
                 <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900">
                   {formatCurrency(p.totalRevenue)}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-mono text-gray-600">
+                  {p.avgMonthlyRevenue > 0 ? formatCurrency(p.avgMonthlyRevenue) : '-'}
+                  {p.avgMonthlyRevenue > 0 && <span className="text-[10px] text-gray-400 block">/月</span>}
                 </td>
                 <td 
                   onClick={() => setSelectedProjectForCost(p)}
@@ -183,7 +237,7 @@ const Analytics: React.FC = () => {
               </tr>
             ))}
             {projectMetrics.length === 0 && (
-              <tr><td colSpan={6} className="text-center py-8 text-gray-500">データがありません</td></tr>
+              <tr><td colSpan={8} className="text-center py-8 text-gray-500">条件に一致する案件がありません</td></tr>
             )}
           </tbody>
         </table>
@@ -252,7 +306,7 @@ const Analytics: React.FC = () => {
                     <strong>計算ロジック:</strong><br/>
                     ・過去の月: 実績ログ(WorkLog)に基づく実工数計算<br/>
                     ・当月・未来: アサイン稼働率に基づく予定原価計算 (日割按分あり)<br/>
-                    ※ 予実管理画面で実績を入力すると、その月の原価は実績ベースに上書きされます。
+                    ・賞与: シニアエンジニアの成果報酬(5%)は、案件終了翌月に一括計上されます。
                  </p>
                  <table className="min-w-full divide-y divide-gray-200 text-sm">
                     <thead className="bg-gray-50">
@@ -271,9 +325,12 @@ const Analytics: React.FC = () => {
                               <td className="px-3 py-2 text-xs text-gray-600">
                                  {row.method.includes('実績') && <span className="text-blue-600 font-bold">{row.method}</span>}
                                  {row.method.includes('予定') && <span className="text-orange-600">{row.method}</span>}
+                                 {row.method.includes('賞与') && <span className="text-purple-600 font-bold">{row.method}</span>}
                                  {row.method === '予定なし' && <span className="text-gray-400">-</span>}
                               </td>
-                              <td className="px-3 py-2 text-xs text-gray-500">{row.details}</td>
+                              <td className="px-3 py-2 text-xs text-gray-500">
+                                  {row.details}
+                              </td>
                            </tr>
                        ))}
                     </tbody>

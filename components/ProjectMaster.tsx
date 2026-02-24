@@ -1,9 +1,9 @@
 
 import React, { useState } from 'react';
 import { useData } from '../context/AppContext';
-import { Project, ProjectType, ProjectStatus, RevenueRecognitionMethod } from '../types';
-import { formatCurrency, getTermDateRange, calculateExactMonths } from '../utils';
-import { Plus, Search, Filter, X, Archive, ArrowLeft, Tag } from 'lucide-react';
+import { Project, ProjectType, ProjectStatus, RevenueRecognitionMethod, BillingMilestone } from '../types';
+import { formatCurrency, getTermDateRange, calculateExactMonths, generateId, calculateDayDiff } from '../utils';
+import { Plus, X, Archive, ArrowLeft, Tag, Trash2, Lock, Search } from 'lucide-react';
 import { NumberInput } from './NumberInput';
 
 const ProjectMaster: React.FC = () => {
@@ -53,10 +53,16 @@ const ProjectMaster: React.FC = () => {
     stockStart.setDate(stockStart.getDate() + 1);
     const stockStartStr = stockStart.toISOString().split('T')[0];
 
-    return { flowStart, flowEnd: flowEndStr, stockStart: stockStartStr };
+    // Stock ends 2 years after stock start (Tentative default)
+    const stockEnd = new Date(stockStart);
+    stockEnd.setFullYear(stockEnd.getFullYear() + 2);
+    stockEnd.setDate(stockEnd.getDate() - 1);
+    const stockEndStr = stockEnd.toISOString().split('T')[0];
+
+    return { flowStart, flowEnd: flowEndStr, stockStart: stockStartStr, stockEnd: stockEndStr };
   };
 
-  const { flowStart, flowEnd, stockStart } = getInitialDates();
+  const { flowStart, flowEnd, stockStart, stockEnd } = getInitialDates();
 
   // Form State
   const initialFormState: Partial<Project> = {
@@ -69,10 +75,13 @@ const ProjectMaster: React.FC = () => {
     assignments: [],
     projectTasks: [],
     
+    firstMeetingDate: '',
+    contractDate: '',
+
     useFlow: true,
     useStock: true, // Default for Dev
     useTimeCharge: false,
-    revenueMethod: RevenueRecognitionMethod.Duration, // Default
+    revenueMethod: RevenueRecognitionMethod.Milestone, // FORCE MILESTONE DEFAULT
     
     flowAmount: 0,
     flowStartDate: flowStart,
@@ -80,21 +89,45 @@ const ProjectMaster: React.FC = () => {
     
     stockAmount: 0,
     stockStartDate: stockStart,
+    stockEndDate: stockEnd, // Default: 2 years
 
     timeChargePrices: {},
     
     billingConfig: {
       flowSplit: false,
-      flowStartRatio: 50,
-      flowStartDelay: 1, 
-      flowStartPayDay: 99, // End of Month
-      flowEndDelay: 1, 
-      flowEndPayDay: 99,
+      flowMilestones: [], // New structure
       stockDelay: 1,
       stockPayDay: 99
     }
   };
   const [form, setForm] = useState<Partial<Project>>(initialFormState);
+
+  // --- Auto Calculation Helper ---
+  // Ensure the LAST milestone always balances the total amount
+  const recalculateMilestones = (milestones: BillingMilestone[], totalFlowAmount: number): BillingMilestone[] => {
+     if (milestones.length === 0) return [];
+     
+     // Deep copy
+     const newMs = milestones.map(m => ({...m}));
+     const lastIdx = newMs.length - 1;
+     
+     // 1. Sum all amounts EXCEPT the last one
+     let sumOthers = 0;
+     for(let i=0; i<lastIdx; i++) {
+         sumOthers += newMs[i].amount;
+     }
+     
+     // 2. Set the last milestone's amount to the remainder
+     // Allow negative if over-budget, to show user the error visually
+     newMs[lastIdx].amount = totalFlowAmount - sumOthers;
+     
+     // 3. Update Ratios for ALL
+     newMs.forEach(m => {
+         m.ratio = totalFlowAmount > 0 ? (m.amount / totalFlowAmount * 100) : 0;
+     });
+     
+     return newMs;
+  };
 
   // Added: Handlers for Dynamic Lead Source
   const handleAddCategory = () => {
@@ -160,7 +193,14 @@ const ProjectMaster: React.FC = () => {
     
     // Auto-draft Stock Start Date: if both Flow & Stock are used, set Stock Start to Flow End + 1 day
     if (form.useFlow && form.useStock) {
-       updates.stockStartDate = getNextDay(newDate);
+       const newStockStart = getNextDay(newDate);
+       updates.stockStartDate = newStockStart;
+
+       // Also update Stock End Date to 2 years from new start
+       const d = new Date(newStockStart);
+       d.setFullYear(d.getFullYear() + 2);
+       d.setDate(d.getDate() - 1);
+       updates.stockEndDate = d.toISOString().split('T')[0];
     }
     setForm(prev => ({ ...prev, ...updates }));
   };
@@ -168,16 +208,195 @@ const ProjectMaster: React.FC = () => {
   // Handler for Stock Checkbox - Auto-draft Date when enabled
   const handleUseStockChange = (checked: boolean) => {
     let updates: Partial<Project> = { useStock: checked };
-    if (checked && form.useFlow && form.flowEndDate) {
-        updates.stockStartDate = getNextDay(form.flowEndDate);
+    if (checked) {
+        let currentStockStart = form.stockStartDate;
+        
+        // If Flow is enabled, align with Flow End
+        if (form.useFlow && form.flowEndDate) {
+            currentStockStart = getNextDay(form.flowEndDate);
+            updates.stockStartDate = currentStockStart;
+        }
+
+        // Calculate 2 years from stock start
+        if (currentStockStart) {
+            const d = new Date(currentStockStart);
+            d.setFullYear(d.getFullYear() + 2);
+            d.setDate(d.getDate() - 1);
+            updates.stockEndDate = d.toISOString().split('T')[0];
+        }
     }
     setForm(prev => ({ ...prev, ...updates }));
   };
 
+  // Handler for Contract Date - Auto-sync Start Date
+  const handleContractDateChange = (date: string) => {
+    setForm(prev => {
+        const updates: Partial<Project> = { contractDate: date };
+        
+        // Logic: Sync "Start Date" to "Contract Date"
+        // If Flow is enabled, Flow Start Date = Contract Date
+        if (prev.useFlow) {
+            updates.flowStartDate = date;
+        } 
+        // If Flow is disabled but Stock is enabled, Stock Start Date = Contract Date
+        else if (prev.useStock) {
+            updates.stockStartDate = date;
+            
+            // Also maintain the 2-year default duration for stock
+            const d = new Date(date);
+            d.setFullYear(d.getFullYear() + 2);
+            d.setDate(d.getDate() - 1);
+            updates.stockEndDate = d.toISOString().split('T')[0];
+        }
+        
+        return { ...prev, ...updates };
+    });
+  };
 
-  // Filtering
-  const [searchTerm, setSearchTerm] = useState('');
-  const [filterType, setFilterType] = useState<string>('all');
+  // --- Milestone Handlers ---
+
+  // When Contract Total changes, recalculate the last milestone (Completion Money)
+  const handleFlowAmountChange = (val: number) => {
+      setForm(prev => {
+          const milestones = prev.billingConfig?.flowMilestones || [];
+          const updatedMilestones = recalculateMilestones(milestones, val);
+          return {
+              ...prev,
+              flowAmount: val,
+              billingConfig: {
+                  ...prev.billingConfig!,
+                  flowMilestones: updatedMilestones
+              }
+          };
+      });
+  };
+
+  const handleToggleSplit = (checked: boolean) => {
+      setForm(prev => {
+          let newMilestones = prev.billingConfig?.flowMilestones || [];
+          const total = prev.flowAmount || 0;
+
+          // If enabling split and no milestones exist, create defaults [Start 50%, End 50%]
+          if (checked && newMilestones.length === 0) {
+              const half = Math.floor(total / 2);
+              newMilestones = [
+                  {
+                      id: generateId(),
+                      name: '着手金',
+                      targetDate: prev.flowStartDate || '',
+                      amount: half,
+                      ratio: 50,
+                      payDelay: 1,
+                      payDay: 99
+                  },
+                  {
+                      id: generateId(),
+                      name: '完了金',
+                      targetDate: prev.flowEndDate || '',
+                      amount: total - half,
+                      ratio: 50,
+                      payDelay: 1,
+                      payDay: 99
+                  }
+              ];
+              // Ensure perfect calc
+              newMilestones = recalculateMilestones(newMilestones, total);
+          }
+
+          // Always RevenueRecognitionMethod.Milestone (Billing Basis) now
+          return {
+              ...prev,
+              revenueMethod: RevenueRecognitionMethod.Milestone,
+              billingConfig: {
+                  ...prev.billingConfig!,
+                  flowSplit: checked,
+                  flowMilestones: newMilestones
+              }
+          };
+      });
+  };
+
+  const handleAddMilestone = () => {
+    const currentMilestones = form.billingConfig?.flowMilestones || [];
+    const total = form.flowAmount || 0;
+
+    const newM: BillingMilestone = {
+      id: generateId(),
+      name: '中間金',
+      targetDate: form.flowEndDate || '',
+      amount: 0,
+      ratio: 0,
+      payDelay: 1,
+      payDay: 99
+    };
+    
+    // Logic: Insert BEFORE the last item (Completion Money) so user adds "Middle Money"
+    // If list is empty (shouldn't happen if initialized), just push.
+    const newList = [...currentMilestones];
+    const insertIdx = Math.max(0, newList.length - 1);
+    
+    if (newList.length === 0) {
+        newM.name = '完了金'; // First item acts as completion
+        newList.push(newM);
+    } else {
+        newList.splice(insertIdx, 0, newM);
+    }
+
+    const updated = recalculateMilestones(newList, total);
+
+    setForm(prev => ({
+      ...prev,
+      billingConfig: {
+        ...prev.billingConfig!,
+        flowMilestones: updated
+      }
+    }));
+  };
+
+  const handleUpdateMilestone = (id: string, updates: Partial<BillingMilestone>) => {
+    setForm(prev => {
+        const total = prev.flowAmount || 0;
+        let ms = (prev.billingConfig!.flowMilestones || []).map(m => 
+            m.id === id ? { ...m, ...updates } : m
+        );
+        
+        // If amount changed, we must recalculate the last milestone to balance the total
+        // Note: The UI prevents editing the last milestone's amount directly, 
+        // but this logic ensures consistency if we edit any previous milestone.
+        if (updates.amount !== undefined) {
+            ms = recalculateMilestones(ms, total);
+        }
+
+        return { ...prev, billingConfig: { ...prev.billingConfig!, flowMilestones: ms } };
+    });
+  };
+
+  const handleDeleteMilestone = (id: string) => {
+    setForm(prev => {
+      const filtered = (prev.billingConfig!.flowMilestones || []).filter(m => m.id !== id);
+      const updated = recalculateMilestones(filtered, prev.flowAmount || 0);
+      return {
+          ...prev,
+          billingConfig: {
+            ...prev.billingConfig!,
+            flowMilestones: updated
+          }
+      };
+    });
+  };
+
+  // --- Filtering Logic ---
+  const [filters, setFilters] = useState({
+      client: '',
+      project: '',
+      type: '',
+      lead: '',
+      status: '',
+      amountMin: 0,
+      amountMax: 0,
+      dateFrom: '',
+      dateTo: ''
+  });
   
   const filteredProjects = projects.filter(p => {
     // 1. View Mode Filter (Lost vs Active)
@@ -189,14 +408,7 @@ const ProjectMaster: React.FC = () => {
         if (p.status === ProjectStatus.Lost) return false;
     }
 
-    const matchesSearch = 
-      p.clientName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      (p.projectName && p.projectName.toLowerCase().includes(searchTerm.toLowerCase()));
-      
-    const matchesType = filterType === 'all' || p.projectType === filterType;
-    
-    // Term filter check (Overlap Logic)
-    // Show if project duration overlaps with the fiscal term
+    // 2. Term Overlap
     const { start: termStart, end: termEnd } = getTermDateRange(currentTerm);
     
     // Determine Project Start and End for filtering
@@ -218,39 +430,63 @@ const ProjectMaster: React.FC = () => {
             const d = new Date(p.stockStartDate);
             if (!pStart || d < pStart) pStart = d;
         }
-        // Stock has no definite end usually, assume it extends to term end or future
-        // If stock is active, set pEnd to termEnd to ensure overlap returns true
         if (pStart) {
-             pEnd = new Date(termEnd); 
-             pEnd.setFullYear(pEnd.getFullYear() + 1); // Future
+             // If stockEndDate exists, use it. Else assume future.
+             if (p.stockEndDate) {
+                 const d = new Date(p.stockEndDate);
+                 if (!pEnd || d > pEnd) pEnd = d;
+             } else {
+                 pEnd = new Date(termEnd); 
+                 pEnd.setFullYear(pEnd.getFullYear() + 1); // Future
+             }
         }
     }
     if (p.useTimeCharge) {
-        // Assume overlapping if set, usually active
         pStart = termStart;
         pEnd = termEnd;
     }
 
-    // If no date set, assume it's a draft and might show up if just created? 
-    // Or strictly hide. Let's hide if absolutely no date, but pre-filled defaults usually prevent this.
     if (!pStart) return false;
     if (!pEnd) pEnd = pStart;
 
-    // Overlap Check: (StartA <= EndB) and (EndA >= StartB)
     const overlaps = (pStart <= termEnd) && (pEnd >= termStart);
+    if (!overlaps) return false;
 
-    return matchesSearch && matchesType && overlaps;
+    // 3. Column Screening
+    if (filters.client && !p.clientName.toLowerCase().includes(filters.client.toLowerCase())) return false;
+    if (filters.project && !p.projectName?.toLowerCase().includes(filters.project.toLowerCase())) return false;
+    if (filters.type && p.projectType !== filters.type) return false;
+    if (filters.lead && p.leadSourceCategory !== filters.lead) return false;
+    if (filters.status && p.status !== filters.status) return false;
+
+    // Amount Range Filter
+    // Logic: If Flow exists, check Flow Amount. If only Stock, check Stock Amount.
+    const amountVal = p.useFlow ? p.flowAmount : (p.useStock ? p.stockAmount : 0);
+    
+    if (filters.amountMin > 0 && amountVal < filters.amountMin) return false;
+    if (filters.amountMax > 0 && amountVal > filters.amountMax) return false;
+
+    // Date Range Filter (Start Date)
+    const startDate = pStart ? pStart.toISOString().split('T')[0] : '';
+    if (startDate) {
+        if (filters.dateFrom && startDate < filters.dateFrom) return false;
+        if (filters.dateTo && startDate > filters.dateTo) return false;
+    } else {
+        if (filters.dateFrom || filters.dateTo) return false;
+    }
+
+    return true;
   });
 
   const handleOpenCreate = () => {
     setEditingId(null);
-    // Re-calculate initial dates based on CURRENT TERM for new open
-    const { flowStart, flowEnd, stockStart } = getInitialDates();
+    const { flowStart, flowEnd, stockStart, stockEnd } = getInitialDates();
     setForm({
         ...initialFormState,
         flowStartDate: flowStart,
         flowEndDate: flowEnd,
         stockStartDate: stockStart,
+        stockEndDate: stockEnd,
         timeChargePrices: {}
     });
     setShowModal(true);
@@ -263,7 +499,6 @@ const ProjectMaster: React.FC = () => {
   };
 
   const handleSave = () => {
-    // Validation
     if (!form.clientName) {
        alert('クライアント名を入力してください。');
        return;
@@ -271,6 +506,21 @@ const ProjectMaster: React.FC = () => {
     if (!form.useFlow && !form.useStock && !form.useTimeCharge) {
        alert('少なくとも1つの契約形態(固定報酬, サブスク, タイムチャージ)を選択してください。');
        return;
+    }
+    // Validation: Milestones
+    if (form.useFlow && form.billingConfig?.flowSplit) {
+       const milestones = form.billingConfig.flowMilestones || [];
+       if (milestones.length === 0) {
+           alert('分割請求を選択していますが、マイルストーンが登録されていません。');
+           return;
+       }
+       const total = milestones.reduce((sum, m) => sum + m.amount, 0);
+       // Strict check, but allow small floating point diff
+       if (Math.abs(total - (form.flowAmount || 0)) > 1) { 
+           if(!confirm(`マイルストーン合計額(${formatCurrency(total)})と契約総額(${formatCurrency(form.flowAmount || 0)})が一致しません。自動計算が正しく行われていない可能性がありますが、保存しますか？`)) {
+               return;
+           }
+       }
     }
 
     const projectData = form as Project;
@@ -280,11 +530,9 @@ const ProjectMaster: React.FC = () => {
       addProject(projectData);
     }
     
-    // Reset View State to show the saved project
     setShowModal(false);
-    setShowLostList(false); // Switch to active list
-    setSearchTerm(''); // Clear search
-    setFilterType('all'); // Clear filters
+    setShowLostList(false);
+    // Filters reset optional, but keeping filters active might be better UX
   };
 
   // Time Charge Monthly Grid generator
@@ -310,7 +558,7 @@ const ProjectMaster: React.FC = () => {
                       <div key={m.key} className="flex items-center gap-2 bg-white p-2 rounded border border-purple-100">
                           <span className="text-xs font-bold text-gray-500 w-16">{m.label}</span>
                           <NumberInput
-                            className="w-full text-right border-b border-gray-200 focus:border-purple-500 focus:outline-none text-sm font-mono"
+                            className="w-full text-right border-b border-gray-200 focus:border-purple-500 focus:outline-none text-sm font-mono bg-white"
                             value={form.timeChargePrices?.[m.key] || 0}
                             onChange={(val) => {
                                 const newPrices = { ...(form.timeChargePrices || {}) };
@@ -339,48 +587,47 @@ const ProjectMaster: React.FC = () => {
   }) => (
     <div className="flex gap-2">
       <select 
-        className="w-1/2 border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-blue-500"
+        className="w-1/2 border p-2 rounded text-xs bg-white focus:ring-2 focus:ring-blue-500"
         value={delayValue}
         onChange={e => onDelayChange(Number(e.target.value))}
       >
-        <option value={0}>当月 (0ヶ月)</option>
-        <option value={1}>翌月 (1ヶ月後)</option>
-        <option value={2}>翌々月 (2ヶ月後)</option>
+        <option value={0}>当月</option>
+        <option value={1}>翌月</option>
+        <option value={2}>翌々月</option>
         <option value={3}>3ヶ月後</option>
-        <option value={4}>4ヶ月後</option>
       </select>
       <select
-        className="w-1/2 border p-2 rounded text-sm bg-white focus:ring-2 focus:ring-blue-500"
+        className="w-1/2 border p-2 rounded text-xs bg-white focus:ring-2 focus:ring-blue-500"
         value={payDayValue || 99}
         onChange={e => onPayDayChange(Number(e.target.value))}
       >
-        <option value={99}>末日払い</option>
-        <option value={5}>5日払い</option>
-        <option value={10}>10日払い</option>
-        <option value={15}>15日払い</option>
-        <option value={20}>20日払い</option>
-        <option value={25}>25日払い</option>
+        <option value={99}>末日</option>
+        <option value={5}>5日</option>
+        <option value={10}>10日</option>
+        <option value={15}>15日</option>
+        <option value={20}>20日</option>
+        <option value={25}>25日</option>
       </select>
     </div>
   );
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h2 className="text-xl font-bold text-gray-700">
+    <div className="space-y-6 h-full overflow-y-auto pr-2 w-full">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 flex-wrap">
+        <h2 className="text-xl font-bold text-gray-700 whitespace-nowrap">
             {showLostList ? `案件マスタ - 失注リスト (${currentTerm}年11月期)` : `案件マスタ (${currentTerm}年11月期)`}
         </h2>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           {showLostList ? (
-             <button onClick={() => setShowLostList(false)} className="flex items-center px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded hover:bg-gray-50 text-sm font-bold shadow-sm">
+             <button onClick={() => setShowLostList(false)} className="flex items-center px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded hover:bg-gray-50 text-sm font-bold shadow-sm whitespace-nowrap">
                <ArrowLeft className="w-4 h-4 mr-1"/> 案件一覧に戻る
              </button>
           ) : (
             <>
-               <button onClick={() => setShowLostList(true)} className="flex items-center px-4 py-2 bg-white border border-red-200 text-red-600 rounded hover:bg-red-50 text-sm font-bold shadow-sm transition-colors">
+               <button onClick={() => setShowLostList(true)} className="flex items-center px-4 py-2 bg-white border border-red-200 text-red-600 rounded hover:bg-red-50 text-sm font-bold shadow-sm transition-colors whitespace-nowrap">
                  <Archive className="w-4 h-4 mr-1"/> 失注案件リスト
                </button>
-               <button onClick={handleOpenCreate} className="flex items-center px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-bold shadow-sm">
+               <button onClick={handleOpenCreate} className="flex items-center px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-bold shadow-sm whitespace-nowrap">
                  <Plus className="w-4 h-4 mr-1"/> 新規案件登録
                </button>
             </>
@@ -388,39 +635,106 @@ const ProjectMaster: React.FC = () => {
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex gap-4 bg-white p-4 rounded shadow-sm border border-gray-100">
-        <div className="relative flex-1">
-          <Search className="w-5 h-5 absolute left-3 top-2.5 text-gray-400" />
-          <input 
-            className="w-full pl-10 pr-4 py-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none" 
-            placeholder="クライアント名、案件名で検索..." 
-            value={searchTerm}
-            onChange={e => setSearchTerm(e.target.value)}
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          <Filter className="w-5 h-5 text-gray-500" />
-          <select className="border p-2 rounded text-sm bg-gray-50" value={filterType} onChange={e => setFilterType(e.target.value)}>
-            <option value="all">全タイプ</option>
-            {Object.values(ProjectType).map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </div>
-      </div>
-
       {/* List */}
-      <div className="bg-white rounded shadow overflow-hidden border border-gray-200">
-        <table className="min-w-full divide-y divide-gray-200 table-fixed">
+      <div className="bg-white rounded shadow overflow-x-auto border border-gray-200">
+        <table className="min-w-[1100px] w-full divide-y divide-gray-200 table-fixed">
           <thead className="bg-gray-50">
             <tr>
               <th className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase w-1/5">クライアント名</th>
               <th className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase w-1/5">案件名</th>
-              <th className="px-2 py-3 text-left text-xs font-bold text-gray-500 uppercase w-24">タイプ</th>
-              <th className="px-2 py-3 text-left text-xs font-bold text-gray-500 uppercase w-32">リード経路</th>
-              <th className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase w-28">ステータス</th>
-              <th className="px-4 py-3 text-right text-xs font-bold text-gray-500 uppercase w-32">金額</th>
-              <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase w-40">開始/期間</th>
-              <th className="px-2 py-3 text-right w-20">操作</th>
+              <th className="px-2 py-3 text-left text-xs font-bold text-gray-500 uppercase w-20">タイプ</th>
+              <th className="px-2 py-3 text-left text-xs font-bold text-gray-500 uppercase w-28">リード経路</th>
+              <th className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase w-24">ステータス</th>
+              <th className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase w-28">初回商談日</th>
+              <th className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase w-28">契約日</th>
+              <th className="px-4 py-3 text-right text-xs font-bold text-gray-500 uppercase w-28">金額</th>
+              <th className="px-2 py-3 text-right w-16">操作</th>
+            </tr>
+            {/* Filter Row */}
+            <tr className="bg-gray-100 border-t border-gray-200">
+              <td className="px-4 py-2">
+                 <div className="relative">
+                   <Search className="w-3 h-3 absolute left-2 top-2.5 text-gray-400" />
+                   <input 
+                     className="w-full pl-7 pr-2 py-1 text-xs border rounded focus:outline-none focus:border-blue-500 bg-white"
+                     placeholder="検索..."
+                     value={filters.client}
+                     onChange={e => setFilters({...filters, client: e.target.value})}
+                   />
+                 </div>
+              </td>
+              <td className="px-4 py-2">
+                 <input 
+                   className="w-full px-2 py-1 text-xs border rounded focus:outline-none focus:border-blue-500 bg-white"
+                   placeholder="案件名検索..."
+                   value={filters.project}
+                   onChange={e => setFilters({...filters, project: e.target.value})}
+                 />
+              </td>
+              <td className="px-2 py-2">
+                 <select 
+                   className="w-full px-1 py-1 text-xs border rounded focus:outline-none bg-white"
+                   value={filters.type}
+                   onChange={e => setFilters({...filters, type: e.target.value})}
+                 >
+                    <option value="">全タイプ</option>
+                    {Object.values(ProjectType).map(t => <option key={t} value={t}>{t}</option>)}
+                 </select>
+              </td>
+              <td className="px-2 py-2">
+                 <select 
+                   className="w-full px-1 py-1 text-xs border rounded focus:outline-none bg-white"
+                   value={filters.lead}
+                   onChange={e => setFilters({...filters, lead: e.target.value})}
+                 >
+                    <option value="">全経路</option>
+                    {Object.keys(leadSourceOptions).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                 </select>
+              </td>
+              <td className="px-2 py-2">
+                 <select 
+                   className="w-full px-1 py-1 text-xs border rounded focus:outline-none bg-white"
+                   value={filters.status}
+                   onChange={e => setFilters({...filters, status: e.target.value})}
+                   disabled={showLostList} // Lock if in Lost List view
+                 >
+                    <option value="">{showLostList ? '失注のみ' : '全ステータス'}</option>
+                    {!showLostList && (
+                        <>
+                            <option value={ProjectStatus.PreOrder}>受注前</option>
+                            <option value={ProjectStatus.Ordered}>デリバリー中</option>
+                            <option value={ProjectStatus.Delivered}>完了</option>
+                        </>
+                    )}
+                 </select>
+              </td>
+              <td className="px-2 py-2"></td>
+              <td className="px-2 py-2"></td>
+              <td className="px-4 py-2">
+                 <div className="flex gap-1">
+                   <NumberInput 
+                     className="w-1/2 px-1 py-1 text-[10px] border rounded focus:outline-none focus:border-blue-500 text-right bg-white"
+                     placeholder="Min"
+                     value={filters.amountMin}
+                     onChange={val => setFilters({...filters, amountMin: val})}
+                   />
+                   <NumberInput 
+                     className="w-1/2 px-1 py-1 text-[10px] border rounded focus:outline-none focus:border-blue-500 text-right bg-white"
+                     placeholder="Max"
+                     value={filters.amountMax}
+                     onChange={val => setFilters({...filters, amountMax: val})}
+                   />
+                 </div>
+              </td>
+              <td className="px-2 py-2 text-center">
+                 <button 
+                   onClick={() => setFilters({ client: '', project: '', type: '', lead: '', status: '', amountMin: 0, amountMax: 0, dateFrom: '', dateTo: '' })}
+                   className="text-xs text-gray-500 hover:text-gray-700 underline"
+                   title="条件クリア"
+                 >
+                    クリア
+                 </button>
+              </td>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
@@ -458,20 +772,16 @@ const ProjectMaster: React.FC = () => {
                         {p.status}
                       </span>
                     </td>
+                    <td className="px-2 py-3 text-center text-xs text-gray-500 font-mono whitespace-nowrap">
+                       {p.firstMeetingDate || '-'}
+                    </td>
+                    <td className="px-2 py-3 text-center text-xs text-gray-500 font-mono whitespace-nowrap">
+                       {p.contractDate || '-'}
+                    </td>
                     <td className="px-4 py-3 text-right">
                        {p.useFlow && <div className="text-sm font-mono text-gray-900 whitespace-nowrap">{formatCurrency(p.flowAmount)} <span className="text-[10px] text-gray-400">(固)</span></div>}
                        {p.useStock && <div className="text-sm font-mono text-gray-700 whitespace-nowrap">{formatCurrency(p.stockAmount)} <span className="text-[10px] text-gray-400">/月</span></div>}
                        {p.useTimeCharge && <div className="text-sm font-mono text-purple-700 whitespace-nowrap">Time <span className="text-[10px] text-gray-400">(従量)</span></div>}
-                    </td>
-                    <td className="px-4 py-3 text-center text-xs text-gray-500 whitespace-nowrap">
-                      {p.useFlow ? (
-                          <>
-                            {p.flowStartDate} ~ {p.flowEndDate}
-                            <div className="text-[10px] text-gray-400">({durationLabel}ヶ月)</div>
-                          </>
-                      ) : (
-                          <>{p.stockStartDate} ~</>
-                      )}
                     </td>
                     <td className="px-2 py-3 text-right">
                       <button onClick={() => handleOpenEdit(p)} className="text-blue-600 hover:text-blue-800 font-bold text-sm whitespace-nowrap">
@@ -482,11 +792,11 @@ const ProjectMaster: React.FC = () => {
                 );
             })}
             {filteredProjects.length === 0 && (
-              <tr>
-                <td colSpan={8} className="px-6 py-12 text-center text-gray-400">
-                   {showLostList ? '失注案件はありません' : '該当する案件がありません'}
-                </td>
-              </tr>
+                <tr>
+                    <td colSpan={9} className="text-center py-8 text-gray-400">
+                        条件に一致する案件はありません
+                    </td>
+                </tr>
             )}
           </tbody>
         </table>
@@ -522,7 +832,7 @@ const ProjectMaster: React.FC = () => {
                     <label className="block text-xs font-bold text-gray-600 mb-1">クライアント名 <span className="text-red-500">*</span></label>
                     <input 
                       list="client-suggestions"
-                      className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
+                      className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white" 
                       placeholder="例: 株式会社Irwin" 
                       value={form.clientName} 
                       onChange={e => setForm({...form, clientName: e.target.value})} 
@@ -535,7 +845,7 @@ const ProjectMaster: React.FC = () => {
                   <div>
                     <label className="block text-xs font-bold text-gray-600 mb-1">案件名 (アップセル等の識別用)</label>
                     <input 
-                      className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" 
+                      className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none bg-white" 
                       placeholder="例: フェーズ2開発, 保守運用2025" 
                       value={form.projectName} 
                       onChange={e => setForm({...form, projectName: e.target.value})} 
@@ -583,7 +893,7 @@ const ProjectMaster: React.FC = () => {
                     {isAddingCategory ? (
                       <div className="flex gap-2">
                          <input 
-                           className="flex-1 border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                           className="flex-1 border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                            placeholder="新しいカテゴリー名"
                            value={newCategoryName}
                            onChange={e => setNewCategoryName(e.target.value)}
@@ -626,7 +936,7 @@ const ProjectMaster: React.FC = () => {
                     {isAddingDetail ? (
                        <div className="flex gap-2">
                          <input 
-                           className="flex-1 border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                           className="flex-1 border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                            placeholder="新しい項目名"
                            value={newDetailName}
                            onChange={e => setNewDetailName(e.target.value)}
@@ -655,6 +965,31 @@ const ProjectMaster: React.FC = () => {
                            />
                         )}
                       </>
+                    )}
+                  </div>
+
+                  {/* New Sales Dates */}
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">初回商談日</label>
+                    <input 
+                      type="date"
+                      className="w-full border p-2 rounded bg-white"
+                      value={form.firstMeetingDate || ''}
+                      onChange={e => setForm({...form, firstMeetingDate: e.target.value})}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">契約締結日</label>
+                    <input 
+                      type="date"
+                      className="w-full border p-2 rounded bg-white"
+                      value={form.contractDate || ''}
+                      onChange={e => handleContractDateChange(e.target.value)}
+                    />
+                    {form.firstMeetingDate && form.contractDate && (
+                        <div className="text-[10px] text-gray-500 mt-1 text-right">
+                            リードタイム: {calculateDayDiff(form.firstMeetingDate, form.contractDate)}日
+                        </div>
                     )}
                   </div>
                 </div>
@@ -710,31 +1045,12 @@ const ProjectMaster: React.FC = () => {
                           <div className="col-span-12 mb-2">
                              <div className="flex items-center gap-4 text-xs">
                                <label className="font-bold text-gray-600">売上計上ロジック:</label>
-                               <label className="flex items-center cursor-pointer">
-                                  <input 
-                                    type="radio" 
-                                    name="revenueMethod" 
-                                    className="mr-1"
-                                    checked={form.revenueMethod === RevenueRecognitionMethod.Duration || !form.revenueMethod}
-                                    onChange={() => setForm({...form, revenueMethod: RevenueRecognitionMethod.Duration})}
-                                  />
-                                  期間按分 (月次平準化)
-                               </label>
-                               <label className="flex items-center cursor-pointer">
-                                  <input 
-                                    type="radio" 
-                                    name="revenueMethod" 
-                                    className="mr-1"
-                                    checked={form.revenueMethod === RevenueRecognitionMethod.Milestone}
-                                    onChange={() => setForm({...form, revenueMethod: RevenueRecognitionMethod.Milestone})}
-                                  />
-                                  請求基準 (着手・完了月のみ計上)
-                               </label>
+                               <span className="font-bold text-blue-700 bg-white px-2 py-1 rounded border border-blue-200 shadow-sm">
+                                  請求基準 (マイルストーン/一括)
+                               </span>
                              </div>
                              <p className="text-[10px] text-blue-600 mt-1 pl-20">
-                                {form.revenueMethod === RevenueRecognitionMethod.Milestone 
-                                   ? "※ 作業期間中の月は売上0円となり、着手金・完了金の請求月のみに売上が立ちます。" 
-                                   : "※ 契約金額を作業期間で割り、毎月均等に売上を計上します(デフォルト)。"}
+                                ※ 売上はすべて請求日基準で計上されます（分割時は各マイルストーン日、一括時は終了日）。
                              </p>
                           </div>
                           
@@ -743,15 +1059,15 @@ const ProjectMaster: React.FC = () => {
                             <div className="relative">
                                 <span className="absolute left-2 top-2 text-gray-400 text-xs">¥</span>
                                 <NumberInput
-                                  className="w-full border p-2 pl-6 rounded text-right font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+                                  className="w-full border p-2 pl-6 rounded text-right font-mono focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                                   value={form.flowAmount || 0}
-                                  onChange={val => setForm({...form, flowAmount: val})}
+                                  onChange={handleFlowAmountChange}
                                 />
                             </div>
                           </div>
                           <div className="col-span-3">
                             <label className="block text-xs font-bold text-gray-600 mb-1">開始日</label>
-                            <input type="date" className="w-full border p-2 rounded" value={form.flowStartDate} onChange={e => setForm({...form, flowStartDate: e.target.value})} />
+                            <input type="date" className="w-full border p-2 rounded bg-white" value={form.flowStartDate} onChange={e => setForm({...form, flowStartDate: e.target.value})} />
                           </div>
                           <div className="col-span-1 flex items-center justify-center pt-5 text-gray-400">
                              ～
@@ -760,7 +1076,7 @@ const ProjectMaster: React.FC = () => {
                             <label className="block text-xs font-bold text-gray-600 mb-1">終了日</label>
                             <input 
                               type="date" 
-                              className="w-full border p-2 rounded" 
+                              className="w-full border p-2 rounded bg-white" 
                               value={form.flowEndDate} 
                               onChange={e => handleFlowEndDateChange(e.target.value)} 
                             />
@@ -784,18 +1100,36 @@ const ProjectMaster: React.FC = () => {
                             <div className="relative">
                                 <span className="absolute left-2 top-2 text-gray-400 text-xs">¥</span>
                                 <NumberInput
-                                  className="w-full border p-2 pl-6 rounded text-right font-mono focus:ring-2 focus:ring-blue-500 outline-none"
+                                  className="w-full border p-2 pl-6 rounded text-right font-mono focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                                   value={form.stockAmount || 0}
                                   onChange={val => setForm({...form, stockAmount: val})}
                                 />
                             </div>
                           </div>
-                          <div className="col-span-4">
+                          <div className="col-span-3">
                             <label className="block text-xs font-bold text-gray-600 mb-1">開始日</label>
-                            <input type="date" className="w-full border p-2 rounded" value={form.stockStartDate} onChange={e => setForm({...form, stockStartDate: e.target.value})} />
+                            <input type="date" className="w-full border p-2 rounded bg-white" value={form.stockStartDate} onChange={e => setForm({...form, stockStartDate: e.target.value})} />
                           </div>
-                          <div className="col-span-4 flex items-center pt-4 text-xs text-gray-500">
-                             ※ 終了日が決まっている場合は、終了時に手動で完了に変更してください。
+                          <div className="col-span-1 flex items-center justify-center pt-5 text-gray-400">
+                             ～
+                          </div>
+                          <div className="col-span-3">
+                            <label className="block text-xs font-bold text-gray-600 mb-1">終了日 (任意)</label>
+                            <input 
+                              type="date" 
+                              className="w-full border p-2 rounded bg-white" 
+                              value={form.stockEndDate || ''} 
+                              onChange={e => setForm({...form, stockEndDate: e.target.value})} 
+                            />
+                          </div>
+                          <div className="col-span-1 flex items-center pt-5">
+                             {form.stockStartDate && form.stockEndDate ? (
+                                <span className="text-xs bg-white border px-2 py-1 rounded font-bold text-gray-700">
+                                    {calculateExactMonths(form.stockStartDate, form.stockEndDate).toFixed(1)}ヶ月
+                                </span>
+                             ) : (
+                                <span className="text-xs text-gray-400">継続</span>
+                             )}
                           </div>
                        </div>
                      </div>
@@ -813,108 +1147,126 @@ const ProjectMaster: React.FC = () => {
                   請求・キャッシュフロー設定
                 </h4>
                 
-                {/* Flow Billing */}
+                {/* Flow Billing (Milestones) */}
                 {form.useFlow && (
                    <div className="mb-6">
-                      <h5 className="text-sm font-bold text-gray-700 mb-3 flex items-center">
-                         <div className="w-2 h-2 bg-blue-500 rounded-full mr-2"></div>
-                         固定報酬の請求条件
-                      </h5>
-                      
-                      <div className="flex items-center justify-between mb-3 bg-gray-50 p-2 rounded border border-gray-200">
-                         <span className="text-xs font-bold text-gray-600">分割請求 (着手金・完了金など)</span>
-                         <label className="inline-flex items-center cursor-pointer">
-                           <input type="checkbox" className="sr-only peer" 
-                              checked={form.billingConfig?.flowSplit}
-                              onChange={e => setForm({
-                                ...form,
-                                billingConfig: { ...form.billingConfig!, flowSplit: e.target.checked }
-                              })}
-                           />
-                           <div className="relative w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
-                         </label>
+                      <div className="flex justify-between items-center mb-3">
+                         <h5 className="text-sm font-bold text-gray-700 flex items-center">
+                            <div className="w-2 h-2 bg-blue-500 rounded-full mr-2"></div>
+                            固定報酬の請求条件 (マイルストーン)
+                         </h5>
+                         
+                         <div className="flex items-center gap-3">
+                            <div className="text-xs text-gray-500">
+                               分割請求: 
+                            </div>
+                            <label className="inline-flex items-center cursor-pointer">
+                               <input type="checkbox" className="sr-only peer" 
+                                  checked={form.billingConfig?.flowSplit}
+                                  onChange={e => handleToggleSplit(e.target.checked)}
+                               />
+                               <div className="relative w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                            </label>
+                         </div>
                       </div>
 
-                      {form.billingConfig?.flowSplit ? (
-                         <div className="grid grid-cols-2 gap-6 bg-white border p-4 rounded">
-                            {/* Start Payment */}
-                            <div className="p-3 bg-gray-50 rounded border border-gray-100">
-                               <div className="text-xs font-bold text-gray-500 mb-2 border-b pb-1">開始時 (着手金)</div>
-                               <div className="space-y-3">
-                                  <div>
-                                     <label className="text-[10px] text-gray-400 block mb-1">金額 (円)</label>
-                                     <div className="relative">
-                                        <span className="absolute left-2 top-2 text-gray-400 text-xs">¥</span>
-                                        <NumberInput 
-                                            className="w-full border p-2 pl-6 rounded text-right text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none" 
-                                            value={Math.round((form.flowAmount || 0) * ((form.billingConfig.flowStartRatio || 0) / 100))}
-                                            onChange={val => {
-                                                // Constrain amount to total flow amount
-                                                const amount = Math.min(val, form.flowAmount || 0);
-                                                const ratio = (form.flowAmount && form.flowAmount > 0) ? (amount / form.flowAmount) * 100 : 0;
-                                                setForm({
-                                                   ...form,
-                                                   billingConfig: { ...form.billingConfig!, flowStartRatio: ratio }
-                                                });
-                                            }}
-                                        />
-                                     </div>
-                                     <div className="text-right text-[10px] text-gray-400 mt-1">
-                                         割合: {form.billingConfig.flowStartRatio?.toFixed(1)}% (自動計算)
-                                     </div>
-                                  </div>
-                                  <div>
-                                     <label className="text-[10px] text-gray-400 block mb-1">入金サイト</label>
-                                     <PaymentTermInput 
-                                        delayValue={form.billingConfig.flowStartDelay}
-                                        payDayValue={form.billingConfig.flowStartPayDay}
-                                        onDelayChange={v => setForm({...form, billingConfig: {...form.billingConfig!, flowStartDelay: v}})}
-                                        onPayDayChange={v => setForm({...form, billingConfig: {...form.billingConfig!, flowStartPayDay: v}})}
-                                     />
-                                  </div>
-                                </div>
-                            </div>
-                            
-                            {/* End Payment */}
-                            <div className="p-3 bg-gray-50 rounded border border-gray-100">
-                               <div className="text-xs font-bold text-gray-500 mb-2 border-b pb-1">完了時 (残金)</div>
-                               <div className="space-y-3">
-                                  <div>
-                                     <label className="text-[10px] text-gray-400 block mb-1">金額 (円)</label>
-                                     <div className="relative">
-                                         <span className="absolute left-2 top-2 text-gray-400 text-xs">¥</span>
-                                         <input 
-                                            type="text"
-                                            className="w-full border p-2 pl-6 rounded text-right text-sm font-mono bg-gray-100 text-gray-500" 
-                                            value={Math.round((form.flowAmount || 0) * ((100 - (form.billingConfig.flowStartRatio || 0)) / 100)).toLocaleString()} 
-                                            readOnly
-                                         />
-                                     </div>
-                                     <div className="text-right text-[10px] text-gray-400 mt-1">
-                                         割合: {(100 - (form.billingConfig.flowStartRatio || 0)).toFixed(1)}%
-                                     </div>
-                                  </div>
-                                  <div>
-                                     <label className="text-[10px] text-gray-400 block mb-1">入金サイト</label>
-                                     <PaymentTermInput 
-                                        delayValue={form.billingConfig.flowEndDelay}
-                                        payDayValue={form.billingConfig.flowEndPayDay}
-                                        onDelayChange={v => setForm({...form, billingConfig: {...form.billingConfig!, flowEndDelay: v}})}
-                                        onPayDayChange={v => setForm({...form, billingConfig: {...form.billingConfig!, flowEndPayDay: v}})}
-                                     />
-                                  </div>
-                               </div>
+                      {!form.billingConfig?.flowSplit ? (
+                         <div className="p-4 border rounded bg-white bg-gray-50 text-center">
+                            <p className="text-xs text-gray-500 mb-2">分割しない場合、完了日(終了日)に一括計上され、翌月末に請求されます。</p>
+                            <div className="inline-block text-left bg-white p-3 border rounded">
+                                <label className="block text-xs font-bold text-gray-600 mb-2">一括入金サイト</label>
+                                <PaymentTermInput 
+                                    delayValue={form.billingConfig?.flowEndDelay}
+                                    payDayValue={form.billingConfig?.flowEndPayDay}
+                                    onDelayChange={v => setForm({...form, billingConfig: {...form.billingConfig!, flowEndDelay: v}})}
+                                    onPayDayChange={v => setForm({...form, billingConfig: {...form.billingConfig!, flowEndPayDay: v}})}
+                                />
                             </div>
                          </div>
                       ) : (
-                         <div className="p-4 border rounded bg-white">
-                            <label className="block text-xs font-bold text-gray-600 mb-2">一括入金サイト (完了時)</label>
-                            <PaymentTermInput 
-                                delayValue={form.billingConfig?.flowEndDelay}
-                                payDayValue={form.billingConfig?.flowEndPayDay}
-                                onDelayChange={v => setForm({...form, billingConfig: {...form.billingConfig!, flowEndDelay: v}})}
-                                onPayDayChange={v => setForm({...form, billingConfig: {...form.billingConfig!, flowEndPayDay: v}})}
-                            />
+                         <div className="bg-white border rounded p-4">
+                            <table className="w-full text-xs mb-3">
+                               <thead className="bg-gray-50">
+                                  <tr>
+                                     <th className="p-2 text-left text-gray-500 w-32">名目 (着手金等)</th>
+                                     <th className="p-2 text-left text-gray-500 w-32">請求基準日 (売上計上)</th>
+                                     <th className="p-2 text-right text-gray-500 w-32">金額 (円)</th>
+                                     <th className="p-2 text-right text-gray-500 w-16">割合</th>
+                                     <th className="p-2 text-left text-gray-500">入金サイト</th>
+                                     <th className="p-2 w-8"></th>
+                                  </tr>
+                               </thead>
+                               <tbody>
+                                  {(form.billingConfig?.flowMilestones || []).map((m, idx) => {
+                                     const isLast = idx === (form.billingConfig?.flowMilestones || []).length - 1;
+                                     return (
+                                     <tr key={m.id} className="border-b">
+                                        <td className="p-2">
+                                           <input 
+                                             className="w-full border p-1 rounded bg-white"
+                                             placeholder="着手金"
+                                             value={m.name}
+                                             onChange={e => handleUpdateMilestone(m.id, { name: e.target.value })}
+                                           />
+                                        </td>
+                                        <td className="p-2">
+                                           <input 
+                                             type="date"
+                                             className="w-full border p-1 rounded bg-white"
+                                             value={m.targetDate}
+                                             onChange={e => handleUpdateMilestone(m.id, { targetDate: e.target.value })}
+                                           />
+                                        </td>
+                                        <td className="p-2 relative">
+                                           <NumberInput 
+                                              className={`w-full border p-1 rounded text-right ${isLast ? 'bg-gray-100 text-gray-700 border-gray-300' : 'bg-white'}`}
+                                              value={m.amount}
+                                              onChange={val => handleUpdateMilestone(m.id, { amount: val })}
+                                              readOnly={isLast}
+                                           />
+                                           {isLast && <Lock className="w-3 h-3 text-gray-400 absolute left-3 top-3.5" />}
+                                        </td>
+                                        <td className="p-2 text-right text-gray-500">
+                                           {m.ratio.toFixed(1)}%
+                                        </td>
+                                        <td className="p-2">
+                                           <PaymentTermInput 
+                                              delayValue={m.payDelay}
+                                              payDayValue={m.payDay}
+                                              onDelayChange={v => handleUpdateMilestone(m.id, { payDelay: v })}
+                                              onPayDayChange={v => handleUpdateMilestone(m.id, { payDay: v })}
+                                           />
+                                        </td>
+                                        <td className="p-2 text-center">
+                                           {/* Prevent deleting if it's the only one, though we usually maintain 1 */}
+                                           <button onClick={() => handleDeleteMilestone(m.id)} className="text-red-400 hover:text-red-600">
+                                              <Trash2 className="w-4 h-4" />
+                                           </button>
+                                        </td>
+                                     </tr>
+                                  )})}
+                               </tbody>
+                            </table>
+                            <div className="flex justify-between items-center border-t pt-2">
+                               <button 
+                                 onClick={handleAddMilestone}
+                                 className="flex items-center text-xs text-blue-600 font-bold hover:bg-blue-50 px-3 py-1.5 rounded"
+                               >
+                                  <Plus className="w-3 h-3 mr-1" /> 行を追加
+                               </button>
+                               <div className="text-right text-xs">
+                                  <span className="text-gray-500 mr-2">合計:</span>
+                                  <span className={`font-mono text-sm font-bold ${(form.billingConfig?.flowMilestones?.reduce((s, m) => s + m.amount, 0) || 0) === (form.flowAmount || 0) ? 'text-green-600' : 'text-red-500'}`}>
+                                     {formatCurrency(form.billingConfig?.flowMilestones?.reduce((s, m) => s + m.amount, 0) || 0)}
+                                  </span>
+                                  <span className="text-gray-400 mx-1">/</span>
+                                  <span className="text-gray-600">{formatCurrency(form.flowAmount || 0)}</span>
+                               </div>
+                            </div>
+                            <div className="text-[10px] text-gray-400 mt-2 flex items-start">
+                               <span className="bg-gray-200 text-gray-600 rounded px-1 mr-1 text-[10px]">Auto</span>
+                               最後の行(完了金等)は、契約総額との差額として自動計算されます。金額を直接編集したい場合は、上の行を調整してください。
+                            </div>
                          </div>
                       )}
                    </div>
@@ -957,7 +1309,7 @@ const ProjectMaster: React.FC = () => {
                             <div className="flex items-center">
                               <label className="text-xs text-gray-400 mr-1">稼働率:</label>
                               <NumberInput
-                                className="w-16 border rounded p-1 text-right mr-1 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                className="w-16 border rounded p-1 text-right mr-1 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                                 value={assign?.utilizationRate || 0}
                                 onChange={(val) => {
                                   const currentAssigns = form.assignments || [];

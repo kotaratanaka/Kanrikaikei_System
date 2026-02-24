@@ -2,8 +2,8 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useData } from '../context/AppContext';
 import { getTermMonthsWithWeeks, generateId } from '../utils';
-import { User, ChevronRight, CheckCircle2, CircleDashed, ListTodo, Plus, X } from 'lucide-react';
-import { Project, ProjectStatus } from '../types';
+import { User, ChevronRight, CheckCircle2, CircleDashed, ListTodo, Plus, X, Trash2 } from 'lucide-react';
+import { Project, ProjectStatus, EmployeeRole, ContractType, Employee } from '../types';
 
 const ResourcePlanning: React.FC = () => {
   const { employees, projects, workLogs, currentTerm, updateWorkLog, updateProject } = useData();
@@ -17,6 +17,10 @@ const ResourcePlanning: React.FC = () => {
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [targetProject, setTargetProject] = useState<Project | null>(null);
   const [newTaskName, setNewTaskName] = useState('');
+
+  // Task Editing State
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [tempTaskName, setTempTaskName] = useState('');
 
   // Grouped weeks structure
   const termMonths = useMemo(() => getTermMonthsWithWeeks(currentTerm), [currentTerm]);
@@ -60,9 +64,23 @@ const ResourcePlanning: React.FC = () => {
     return false;
   };
 
+  // Helper to determine if a week is a Year-End/New-Year holiday
+  const isHolidayWeek = (dateStr: string) => {
+    const d = new Date(dateStr);
+    const m = d.getMonth(); // 0-indexed (11=Dec, 0=Jan)
+    const date = d.getDate();
+    // Week starting between Dec 28 and Jan 3 is considered a holiday week
+    if (m === 11 && date >= 28) return true;
+    if (m === 0 && date <= 3) return true;
+    return false;
+  };
+
+  // Helper: Get base weekly hours for utilization calc
+  const getStandardWeeklyHours = (emp: Employee) => emp.defaultMonthlyHours / 4 || 40;
+
   // Filter projects relevant to the selected employee AND the active/completed state
   const empProjects = useMemo(() => {
-    if (!selectedEmpId) return [];
+    if (!selectedEmpId || !selectedEmployee) return [];
     
     const relevantProjects = projects.filter(p => 
       p.assignments.some(a => a.employeeId === selectedEmpId) || 
@@ -77,13 +95,14 @@ const ResourcePlanning: React.FC = () => {
         
         // Active Tab: Show 'Ordered' (Delivery in Progress) AND 'PreOrder' (Before Order/Draft)
         if (activeTab === 'active') {
+             // Allow ALL roles to see PreOrder projects to input planned hours
              return p.status === ProjectStatus.Ordered || p.status === ProjectStatus.PreOrder;
         } else {
              // Completed Tab
              return p.status === ProjectStatus.Delivered || (p.status === ProjectStatus.Ordered && completed);
         }
     });
-  }, [projects, workLogs, selectedEmpId, activeTab]);
+  }, [projects, workLogs, selectedEmpId, selectedEmployee, activeTab]);
 
   const openAddTaskModal = (project: Project) => {
     setTargetProject(project);
@@ -106,11 +125,62 @@ const ResourcePlanning: React.FC = () => {
     setShowTaskModal(false);
   };
 
+  // Inline Task Editing Handlers
+  const startEditTask = (taskId: string, currentName: string) => {
+    setEditingTaskId(taskId);
+    setTempTaskName(currentName);
+  };
+
+  const handleSaveTaskName = (project: Project, taskId: string) => {
+      // Find the project (use fresh data via projects context if needed, but passing object usually works if not stale)
+      // Best to find from state to be safe
+      const currentProj = projects.find(p => p.id === project.id);
+      if (!currentProj) return;
+
+      const updatedTasks = (currentProj.projectTasks || []).map(t => 
+          t.id === taskId ? { ...t, name: tempTaskName } : t
+      );
+      
+      updateProject({ ...currentProj, projectTasks: updatedTasks });
+      setEditingTaskId(null);
+  };
+
+  // Refactored to be robust against ID types and stale closures
+  const handleDeleteTask = (projectId: string, taskId: string) => {
+    if (!window.confirm('このタスクを削除しますか？\n（入力済みの実績データも表示されなくなります）')) return;
+
+    // Use String comparison to handle potential string/number mismatches
+    const currentProject = projects.find(p => String(p.id) === String(projectId));
+    if (!currentProject) {
+        console.error('Project not found:', projectId);
+        return;
+    }
+
+    const currentTasks = currentProject.projectTasks || [];
+    const newTasks = currentTasks.filter(t => String(t.id) !== String(taskId));
+
+    // Optimistic check
+    if (newTasks.length === currentTasks.length) {
+        console.warn('Task ID not found in project:', taskId);
+        return;
+    }
+
+    const updatedProject: Project = {
+      ...currentProject,
+      projectTasks: newTasks
+    };
+    
+    updateProject(updatedProject);
+  };
+
+  // Explicitly constrain height to fit in viewport, taking into account Layout headers/padding
+  // We use calc(100vh - 160px) to ensure the container is shorter than the layout's content area,
+  // preventing the layout itself from scrolling and forcing the internal scrollbars to appear.
   return (
-    <div className="flex h-full gap-4 relative">
+    <div className="flex gap-4 relative h-full">
       {/* Left Sidebar: Employee List */}
-      <div className="w-64 bg-white rounded-lg shadow-sm border border-gray-200 overflow-y-auto flex flex-col">
-        <div className="p-4 bg-gray-50 border-b">
+      <div className="w-64 bg-white rounded-lg shadow-sm border border-gray-200 overflow-y-auto flex flex-col h-full">
+        <div className="p-4 bg-gray-50 border-b flex-shrink-0">
           <h3 className="font-bold text-gray-700">従業員一覧</h3>
         </div>
         <ul className="flex-1 overflow-y-auto">
@@ -135,15 +205,15 @@ const ResourcePlanning: React.FC = () => {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col overflow-hidden">
+      <div className="flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col overflow-hidden h-full">
         {!selectedEmployee ? (
           <div className="flex-1 flex items-center justify-center text-gray-400">
             左側のリストから従業員を選択してください
           </div>
         ) : (
-          <div className="flex-1 flex flex-col">
+          <div className="flex-1 flex flex-col h-full overflow-hidden">
              {/* Header Info & Tabs */}
-             <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
+             <div className="p-4 border-b bg-gray-50 flex justify-between items-center flex-shrink-0">
                <div>
                  <h3 className="text-lg font-bold text-gray-800">{selectedEmployee.name} - 稼働計画 ({currentTerm}年11月期)</h3>
                  <p className="text-xs text-gray-500">標準稼働(月): {selectedEmployee.defaultMonthlyHours}h</p>
@@ -167,10 +237,10 @@ const ResourcePlanning: React.FC = () => {
                </div>
              </div>
              
-             {/* Grid */}
+             {/* Grid - The scroll container for both X and Y */}
              <div className="flex-1 overflow-auto" ref={scrollContainerRef}>
                <table className="min-w-full divide-y divide-gray-200 border-collapse">
-                 <thead className="bg-gray-100 sticky top-0 z-20">
+                 <thead className="bg-gray-100 sticky top-0 z-20 shadow-sm">
                    {/* Row 1: Months */}
                    <tr>
                      <th className="p-2 border text-left min-w-[240px] font-medium text-gray-600 text-sm bg-gray-100 sticky left-0 z-30" rowSpan={2}>案件 / タスク</th>
@@ -209,15 +279,20 @@ const ResourcePlanning: React.FC = () => {
                              .filter(l => l.employeeId === selectedEmployee.id && l.weekStartDate === week.startDate)
                              .reduce((sum, l) => sum + l.actualHours, 0);
                            
-                           // Approx weekly standard
-                           const standardWeekly = selectedEmployee.defaultMonthlyHours / 4.33; 
-                           const utilization = (totalActual / standardWeekly) * 100;
+                           // Holiday check: if holiday week, standard hours = 0
+                           let standardWeekly = selectedEmployee.defaultMonthlyHours / 4; 
+                           if (isHolidayWeek(week.startDate)) {
+                               standardWeekly = 0;
+                           }
+
+                           const utilization = standardWeekly > 0 ? (totalActual / standardWeekly) * 100 : (totalActual > 0 ? 100 : 0);
                            
                            return (
-                             <td key={week.startDate} className="p-2 border text-center text-xs">
+                             <td key={week.startDate} className={`p-2 border text-center text-xs ${standardWeekly === 0 ? 'bg-gray-100' : ''}`}>
                                <div className={utilization > 100 ? 'text-red-600' : 'text-blue-800'}>
                                  {totalActual}h<br/>
-                                 <span className="text-[10px] opacity-75">({utilization.toFixed(0)}%)</span>
+                                 {standardWeekly > 0 && <span className="text-[10px] opacity-75">({utilization.toFixed(0)}%)</span>}
+                                 {standardWeekly === 0 && <span className="text-[10px] text-gray-400">休暇</span>}
                                </div>
                              </td>
                            );
@@ -230,13 +305,17 @@ const ResourcePlanning: React.FC = () => {
                       const assignment = proj.assignments.find(a => a.employeeId === selectedEmployee.id);
                       const utilizationRate = assignment?.utilizationRate || 0;
                       // Calculate planned hours from utilization rate
-                      // E.g., 50% of 160h = 80h/month. Weekly approx = 80/4.33 = ~18.5
                       const monthlyHours = selectedEmployee.defaultMonthlyHours * (utilizationRate / 100);
-                      const basePlannedWeekly = Math.round((monthlyHours / 4.33) * 10) / 10;
+                      // CHANGED: Use / 4 instead of 4.33
+                      const basePlannedWeekly = Math.round((monthlyHours / 4) * 10) / 10;
                       
                       const hasTasks = proj.projectTasks && proj.projectTasks.length > 0;
                       
                       const isHybrid = proj.useFlow && proj.useStock;
+
+                      // Check Contract Type for Input Mode (FullTime = %, Others = Hours)
+                      const isFullTime = selectedEmployee.contractType === ContractType.FullTime;
+                      const standardWeeklyForCalc = getStandardWeeklyHours(selectedEmployee);
 
                       return (
                         <React.Fragment key={proj.id}>
@@ -257,8 +336,10 @@ const ResourcePlanning: React.FC = () => {
                                 <Plus className="w-3 h-3 mr-1" /> タスク追加
                               </button>
                             </td>
-                            <td className="p-2 border text-center text-[10px] text-gray-500 bg-gray-50 sticky left-[240px] z-10 leading-tight">
-                              MAX<br/>稼働時間
+                            {/* CHANGED: Show Utilization Rate to clarify 16h calculation */}
+                            <td className="p-2 border text-center text-xs text-gray-500 bg-gray-50 sticky left-[240px] z-10 leading-tight">
+                              <div className="font-medium text-[10px]">稼働予定</div>
+                              <div className="text-blue-600 font-bold text-[10px]">({utilizationRate}%)</div>
                             </td>
                             {termMonths.map(month => 
                               month.weeks.map((week: any) => {
@@ -274,8 +355,13 @@ const ResourcePlanning: React.FC = () => {
                                    }
                                 }
 
+                                // Year-End Holiday Check
+                                if (isHolidayWeek(week.startDate)) {
+                                    plannedWeekly = 0;
+                                }
+
                                 return (
-                                  <td key={week.startDate} className="p-2 border text-center text-xs text-gray-400 bg-gray-50">
+                                  <td key={week.startDate} className={`p-2 border text-center text-xs text-gray-400 ${plannedWeekly === 0 && isHolidayWeek(week.startDate) ? 'bg-gray-100' : 'bg-gray-50'}`}>
                                     {plannedWeekly > 0 ? plannedWeekly : '-'}
                                   </td>
                                 );
@@ -287,38 +373,93 @@ const ResourcePlanning: React.FC = () => {
                           {hasTasks ? (
                               proj.projectTasks.map(task => (
                                 <tr key={task.id}>
-                                  <td className="p-2 border text-xs text-gray-600 sticky left-0 bg-white z-10 pl-6 flex items-center">
-                                    <ListTodo className="w-3 h-3 mr-2 text-gray-400" />
-                                    {task.name}
+                                  <td className="p-2 border text-xs text-gray-600 sticky left-0 bg-white z-10 pl-6 flex items-center justify-between group">
+                                    <div className="flex-1 mr-2 truncate">
+                                        {/* INLINE EDITING: Click to edit task name */}
+                                        {editingTaskId === task.id ? (
+                                            <input 
+                                                autoFocus
+                                                className="w-full border border-blue-300 rounded px-1 py-0.5 text-xs focus:outline-none bg-white"
+                                                value={tempTaskName}
+                                                onChange={e => setTempTaskName(e.target.value)}
+                                                onBlur={() => handleSaveTaskName(proj, task.id)}
+                                                onKeyDown={e => {
+                                                    if (e.key === 'Enter') {
+                                                        e.preventDefault(); 
+                                                        handleSaveTaskName(proj, task.id);
+                                                    } else if (e.key === 'Escape') {
+                                                        setEditingTaskId(null);
+                                                    }
+                                                }}
+                                                onClick={e => e.stopPropagation()}
+                                                onFocus={e => e.target.select()}
+                                            />
+                                        ) : (
+                                            <div 
+                                                className="flex items-center cursor-text hover:text-blue-600 truncate"
+                                                onClick={() => startEditTask(task.id, task.name)}
+                                                title="クリックして名称編集"
+                                            >
+                                                <ListTodo className="w-3 h-3 mr-2 text-gray-400 flex-shrink-0" />
+                                                <span className="truncate">{task.name}</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <button 
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        handleDeleteTask(proj.id, task.id);
+                                      }}
+                                      className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors flex-shrink-0"
+                                      title="タスクを削除"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
                                   </td>
                                   <td className="p-2 border text-center text-xs text-blue-600 font-medium sticky left-[240px] bg-white z-10">実績</td>
                                   {termMonths.map(month => 
                                     month.weeks.map((week: any) => {
                                       const log = workLogs.find(l => 
                                         l.projectId === proj.id && 
-                                        l.taskId === task.id &&
+                                        l.taskId === task.id && 
                                         l.employeeId === selectedEmployee.id && 
                                         l.weekStartDate === week.startDate
                                       );
                                       const actual = log?.actualHours ?? 0;
+                                      const isHoliday = isHolidayWeek(week.startDate);
+                                      
+                                      // Display Logic: Always Hours (with optional % below)
+                                      const displayValue = actual > 0 ? actual : '';
+                                      const utilization = (actual > 0 && standardWeeklyForCalc > 0) ? Math.round((actual / standardWeeklyForCalc) * 100) : 0;
 
                                       return (
-                                        <td key={week.startDate} className="p-0 border text-center">
+                                        <td key={week.startDate} className={`p-0 border relative h-10 ${isHoliday ? 'bg-gray-100' : ''}`}>
                                           <input 
                                             type="number"
-                                            className={`w-full h-full text-center p-2 text-xs focus:bg-blue-50 focus:outline-none ${actual > 0 ? 'text-blue-800 font-bold' : 'text-gray-400'}`}
-                                            value={actual || ''}
+                                            className={`w-full h-full text-center pt-1 pb-3 text-xs focus:bg-blue-50 focus:outline-none ${actual > 0 ? 'text-blue-800 font-bold' : 'text-gray-400'} ${isHoliday ? 'bg-gray-100' : 'bg-white'}`}
+                                            value={displayValue}
                                             placeholder="-"
-                                            onChange={(e) => updateWorkLog({
-                                              id: log?.id || '',
-                                              projectId: proj.id,
-                                              taskId: task.id,
-                                              employeeId: selectedEmployee.id,
-                                              weekStartDate: week.startDate,
-                                              actualHours: Number(e.target.value)
-                                            })}
+                                            onChange={(e) => {
+                                              const val = Number(e.target.value);
+                                              // Save as hours directly
+                                              updateWorkLog({
+                                                id: log?.id || '',
+                                                projectId: proj.id,
+                                                taskId: task.id,
+                                                employeeId: selectedEmployee.id,
+                                                weekStartDate: week.startDate,
+                                                actualHours: val
+                                              });
+                                            }}
                                             onFocus={(e) => e.target.select()}
                                           />
+                                          {utilization > 0 && (
+                                             <div className="absolute bottom-0.5 inset-x-0 text-center text-[9px] text-gray-500 pointer-events-none leading-none">
+                                                ({utilization}%)
+                                             </div>
+                                          )}
                                         </td>
                                       );
                                     })
@@ -341,23 +482,37 @@ const ResourcePlanning: React.FC = () => {
                                       l.weekStartDate === week.startDate
                                     );
                                     const actual = log?.actualHours ?? 0;
+                                    const isHoliday = isHolidayWeek(week.startDate);
+
+                                    // Display Logic: Always Hours (with optional % below)
+                                    const displayValue = actual > 0 ? actual : '';
+                                    const utilization = (actual > 0 && standardWeeklyForCalc > 0) ? Math.round((actual / standardWeeklyForCalc) * 100) : 0;
 
                                     return (
-                                      <td key={week.startDate} className="p-0 border text-center">
+                                      <td key={week.startDate} className={`p-0 border relative h-10 ${isHoliday ? 'bg-gray-100' : ''}`}>
                                         <input 
                                           type="number"
-                                          className={`w-full h-full text-center p-2 text-xs focus:bg-blue-50 focus:outline-none ${actual > basePlannedWeekly ? 'text-red-600 font-bold' : 'text-gray-800'}`}
-                                          value={actual || ''}
+                                          className={`w-full h-full text-center pt-1 pb-3 text-xs focus:bg-blue-50 focus:outline-none ${actual > basePlannedWeekly && !isHoliday ? 'text-red-600 font-bold' : 'text-gray-800'} ${isHoliday ? 'bg-gray-100' : 'bg-white'}`}
+                                          value={displayValue}
                                           placeholder="-"
-                                          onChange={(e) => updateWorkLog({
-                                            id: log?.id || '',
-                                            projectId: proj.id,
-                                            employeeId: selectedEmployee.id,
-                                            weekStartDate: week.startDate,
-                                            actualHours: Number(e.target.value)
-                                          })}
+                                          onChange={(e) => {
+                                            const val = Number(e.target.value);
+                                            // Save as hours directly
+                                            updateWorkLog({
+                                              id: log?.id || '',
+                                              projectId: proj.id,
+                                              employeeId: selectedEmployee.id,
+                                              weekStartDate: week.startDate,
+                                              actualHours: val
+                                            });
+                                          }}
                                           onFocus={(e) => e.target.select()}
                                         />
+                                        {utilization > 0 && (
+                                            <div className="absolute bottom-0.5 inset-x-0 text-center text-[9px] text-gray-500 pointer-events-none leading-none">
+                                                ({utilization}%)
+                                            </div>
+                                        )}
                                       </td>
                                     );
                                   })
@@ -397,7 +552,7 @@ const ResourcePlanning: React.FC = () => {
             </p>
             <input 
               autoFocus
-              className="w-full border p-2 rounded text-sm mb-3 focus:ring-2 focus:ring-blue-500 outline-none"
+              className="w-full border p-2 rounded text-sm mb-3 focus:ring-2 focus:ring-blue-500 outline-none bg-white"
               placeholder="タスク名 (例: 要件定義, 開発)"
               value={newTaskName}
               onChange={e => setNewTaskName(e.target.value)}

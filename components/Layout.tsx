@@ -9,7 +9,9 @@ import {
   DollarSign, 
   LogOut,
   Menu,
-  Calendar
+  Calendar,
+  Database,
+  MessageSquare
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -29,6 +31,8 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, onLo
     { id: 'projects', label: '案件マスタ', icon: Briefcase },
     { id: 'employees', label: '従業員マスタ', icon: Users },
     { id: 'cf', label: 'キャッシュフロー', icon: DollarSign },
+    { id: 'ai_chat', label: 'AIアシスタント', icon: MessageSquare }, // New Item
+    { id: 'data', label: 'データ管理', icon: Database },
   ];
 
   // Dynamic Term Options: Ensure currentTerm is included, and show a reasonable range (e.g. -2 to +2 years)
@@ -84,9 +88,9 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, onLo
       </div>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-auto bg-gray-50 flex flex-col h-screen">
+      <main className="flex-1 bg-gray-50 flex flex-col h-screen overflow-hidden">
         {/* Header with Term Selector */}
-        <header className="bg-white border-b border-gray-200 px-8 py-4 flex justify-between items-center shadow-sm">
+        <header className="bg-white border-b border-gray-200 px-8 py-4 flex justify-between items-center shadow-sm flex-shrink-0">
            <h2 className="text-2xl font-bold text-gray-800">
              {navItems.find(i => i.id === activeTab)?.label}
            </h2>
@@ -106,7 +110,8 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, onLo
            </div>
         </header>
 
-        <div className="p-8 overflow-auto flex-1">
+        {/* Content Wrapper: Prevent parent scrolling, enforce child scrolling */}
+        <div className="flex-1 p-8 min-h-0 overflow-hidden flex flex-col">
           {children}
         </div>
       </main>

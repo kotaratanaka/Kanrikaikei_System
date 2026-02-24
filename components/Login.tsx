@@ -1,19 +1,30 @@
+
 import React, { useState } from 'react';
+import { useData } from '../context/AppContext';
 
 interface LoginProps {
   onLogin: () => void;
 }
 
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
+  const { settings } = useData();
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (email.endsWith('@irwin-and-co.com')) {
+    
+    // Check against domains in settings (or default if missing)
+    const allowedDomains = settings.allowedDomains && settings.allowedDomains.length > 0 
+      ? settings.allowedDomains 
+      : ['irwin-and-co.com'];
+      
+    const isAllowed = allowedDomains.some(domain => email.endsWith(`@${domain}`));
+
+    if (isAllowed) {
       onLogin();
     } else {
-      setError('irwin-and-co.com のメールアドレスのみログイン可能です。');
+      setError(`${allowedDomains.join(', ')} のメールアドレスのみログイン可能です。`);
     }
   };
 
@@ -35,7 +46,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
               <input
                 type="email"
                 required
-                className="w-full px-4 py-3 border border-blue-200 rounded-md focus:ring-2 focus:ring-blue-900 focus:border-blue-900 focus:outline-none placeholder-blue-300 text-blue-900"
+                className="w-full px-4 py-3 border border-blue-200 rounded-md focus:ring-2 focus:ring-blue-900 focus:border-blue-900 focus:outline-none placeholder-blue-300 text-blue-900 bg-white"
                 placeholder="user@irwin-and-co.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}

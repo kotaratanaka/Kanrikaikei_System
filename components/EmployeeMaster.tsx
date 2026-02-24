@@ -1,12 +1,13 @@
+
 import React, { useState } from 'react';
 import { useData } from '../context/AppContext';
-import { ContractType, Employee, MonthlyEmployeeData } from '../types';
+import { ContractType, Employee, MonthlyEmployeeData, EmployeeRole, ProjectStatus } from '../types';
 import { formatCurrency, getTermDateRange, getEmployeeMonthlyData, generateId } from '../utils';
 import { Plus, Trash2, X, Settings, User, Edit2, Check } from 'lucide-react';
 import { NumberInput } from './NumberInput';
 
 const EmployeeMaster: React.FC = () => {
-  const { employees, addEmployee, updateEmployee, deleteEmployee, currentTerm } = useData();
+  const { employees, projects, addEmployee, updateEmployee, deleteEmployee, currentTerm } = useData();
   const [editingEmp, setEditingEmp] = useState<Employee | null>(null);
   
   // State for Monthly Edit Mode
@@ -22,6 +23,7 @@ const EmployeeMaster: React.FC = () => {
     const newEmp: Employee = {
       id: generateId(),
       name: '',
+      role: EmployeeRole.Engineer, // Default
       contractType: ContractType.Contractor,
       defaultMonthlyCost: 0,
       defaultMonthlyHours: 160,
@@ -89,7 +91,7 @@ const EmployeeMaster: React.FC = () => {
 
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white p-6 rounded-lg w-[700px] max-h-[90vh] overflow-auto shadow-xl">
+        <div className="bg-white p-6 rounded-lg w-[800px] max-h-[90vh] overflow-auto shadow-xl">
           <div className="flex justify-between items-center mb-6 border-b pb-4">
              <h3 className="font-bold text-xl text-gray-800 flex items-center">
                <Settings className="w-5 h-5 mr-2 text-gray-500"/>
@@ -108,12 +110,26 @@ const EmployeeMaster: React.FC = () => {
                 <div className="col-span-2 md:col-span-1">
                   <label className="block text-xs font-bold text-gray-500 mb-1">名前</label>
                   <input 
-                    className="w-full border border-gray-300 rounded p-2 focus:ring-2 focus:ring-blue-500 outline-none" 
+                    className="w-full border border-gray-300 rounded p-2 focus:ring-2 focus:ring-blue-500 outline-none bg-white" 
                     placeholder="氏名を入力" 
                     value={editingEmp.name} 
                     onChange={e => setEditingEmp({...editingEmp, name: e.target.value})} 
                   />
                 </div>
+                
+                <div className="col-span-2 md:col-span-1">
+                  <label className="block text-xs font-bold text-gray-500 mb-1">役職/職種</label>
+                  <select 
+                    className="w-full border border-gray-300 rounded p-2 focus:ring-2 focus:ring-blue-500 outline-none bg-white" 
+                    value={editingEmp.role || EmployeeRole.Engineer} 
+                    onChange={e => setEditingEmp({...editingEmp, role: e.target.value as EmployeeRole})}
+                  >
+                    {Object.values(EmployeeRole).map(role => (
+                        <option key={role} value={role}>{role}</option>
+                    ))}
+                  </select>
+                </div>
+
                 <div className="col-span-2 md:col-span-1">
                   <label className="block text-xs font-bold text-gray-500 mb-1">契約形態</label>
                   <select 
@@ -125,12 +141,17 @@ const EmployeeMaster: React.FC = () => {
                     <option value={ContractType.FullTime}>{ContractType.FullTime}</option>
                   </select>
                 </div>
+                
+                <div className="col-span-2 md:col-span-1">
+                   {/* Spacer or additional field */}
+                </div>
+
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1">基本報酬 (月額)</label>
                   <div className="relative">
                     <span className="absolute left-2 top-2 text-gray-400 text-xs">¥</span>
                     <NumberInput
-                      className="w-full border border-gray-300 rounded p-2 pl-6 text-right focus:ring-2 focus:ring-blue-500 outline-none"
+                      className="w-full border border-gray-300 rounded p-2 pl-6 text-right focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                       value={editingEmp.defaultMonthlyCost}
                       onChange={val => setEditingEmp({...editingEmp, defaultMonthlyCost: val})}
                     />
@@ -140,11 +161,15 @@ const EmployeeMaster: React.FC = () => {
                   <label className="block text-xs font-bold text-gray-500 mb-1">基本稼働 (月h)</label>
                   <div className="relative">
                      <NumberInput 
-                      className="w-full border border-gray-300 rounded p-2 pr-8 text-right focus:ring-2 focus:ring-blue-500 outline-none" 
+                      className="w-full border border-gray-300 rounded p-2 pr-8 text-right focus:ring-2 focus:ring-blue-500 outline-none bg-white" 
                       value={editingEmp.defaultMonthlyHours}
                       onChange={val => setEditingEmp({...editingEmp, defaultMonthlyHours: val})}
                     />
                     <span className="absolute right-3 top-2 text-gray-400 text-xs">h</span>
+                  </div>
+                  {/* Helper text for weekly view */}
+                  <div className="text-[10px] text-gray-400 text-right mt-1">
+                     週換算: {editingEmp.defaultMonthlyHours / 4}h
                   </div>
                 </div>
               </div>
@@ -156,7 +181,7 @@ const EmployeeMaster: React.FC = () => {
                  <div>
                     <h4 className="text-sm font-bold text-gray-700">月次詳細設定 ({currentTerm}年11月期)</h4>
                     <p className="text-xs text-gray-500 mt-1">
-                       月ごとに報酬や稼働時間が異なる場合に入力してください。
+                       月ごとに報酬や稼働時間が異なる場合や、賞与・変動費がある場合に入力してください。
                     </p>
                  </div>
                  
@@ -190,15 +215,17 @@ const EmployeeMaster: React.FC = () => {
                   <thead className="bg-gray-100">
                     <tr>
                       <th className="py-2 px-3 text-left font-medium text-gray-600">対象月</th>
-                      <th className="py-2 px-3 text-right font-medium text-gray-600">報酬 (月額)</th>
+                      <th className="py-2 px-3 text-right font-medium text-gray-600">固定報酬 (月額)</th>
+                      <th className="py-2 px-3 text-right font-medium text-blue-800 bg-blue-50">賞与・変動費</th>
                       <th className="py-2 px-3 text-right font-medium text-gray-600">想定稼働 (月h)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
                     {months.map(m => {
-                      const data = editingEmp.monthlyData[m.key] || {};
-                      const costOverride = data.cost;
-                      const hoursOverride = data.monthlyHours;
+                      const data = editingEmp.monthlyData[m.key];
+                      const costOverride = data?.cost;
+                      const hoursOverride = data?.monthlyHours;
+                      const bonusVal = data?.bonus ?? 0;
                       
                       // Values to display: use override if present, otherwise default
                       const displayCost = costOverride ?? editingEmp.defaultMonthlyCost;
@@ -206,7 +233,8 @@ const EmployeeMaster: React.FC = () => {
                       
                       const isCostOverridden = costOverride !== undefined;
                       const isHoursOverridden = hoursOverride !== undefined;
-                      const isOverridden = isCostOverridden || isHoursOverridden;
+                      const hasBonus = bonusVal > 0;
+                      const isOverridden = isCostOverridden || isHoursOverridden || hasBonus;
 
                       return (
                         <tr key={m.key} className={isOverridden && isEditingMonthlyMode ? 'bg-blue-50' : 'bg-white'}>
@@ -214,14 +242,14 @@ const EmployeeMaster: React.FC = () => {
                           <td className="py-2 px-3 text-right">
                             {isEditingMonthlyMode ? (
                                 <NumberInput 
-                                  className={`w-full p-1 border rounded text-right focus:ring-2 focus:ring-blue-500 outline-none ${isCostOverridden ? 'border-blue-300 font-bold text-blue-900' : 'border-gray-200 text-gray-600'}`}
+                                  className={`w-full p-1 border rounded text-right focus:ring-2 focus:ring-blue-500 outline-none bg-white ${isCostOverridden ? 'border-blue-300 font-bold text-blue-900' : 'border-gray-200 text-gray-600'}`}
                                   value={displayCost}
                                   onChange={(val) => {
                                      const newData = { ...editingEmp.monthlyData };
-                                     // Ensure we store the number, allowing it to be 0 or distinct from default
                                      newData[m.key] = { 
                                         cost: val, 
-                                        monthlyHours: hoursOverride ?? editingEmp.defaultMonthlyHours 
+                                        monthlyHours: hoursOverride ?? editingEmp.defaultMonthlyHours,
+                                        bonus: bonusVal
                                      };
                                      setEditingEmp({ ...editingEmp, monthlyData: newData });
                                   }}
@@ -232,16 +260,39 @@ const EmployeeMaster: React.FC = () => {
                                 </span>
                             )}
                           </td>
+                          <td className="py-2 px-3 text-right bg-blue-50/30">
+                             {isEditingMonthlyMode ? (
+                                <NumberInput 
+                                  className={`w-full p-1 border rounded text-right focus:ring-2 focus:ring-blue-500 outline-none bg-white ${hasBonus ? 'border-blue-300 font-bold text-blue-800' : 'border-gray-200 text-gray-400'}`}
+                                  value={bonusVal}
+                                  placeholder="0"
+                                  onChange={(val) => {
+                                     const newData = { ...editingEmp.monthlyData };
+                                     newData[m.key] = { 
+                                        cost: costOverride ?? editingEmp.defaultMonthlyCost, 
+                                        monthlyHours: hoursOverride ?? editingEmp.defaultMonthlyHours,
+                                        bonus: val
+                                     };
+                                     setEditingEmp({ ...editingEmp, monthlyData: newData });
+                                  }}
+                                />
+                             ) : (
+                                <span className={`${hasBonus ? 'font-bold text-blue-700' : 'text-gray-400'}`}>
+                                    {hasBonus ? formatCurrency(bonusVal) : '-'}
+                                </span>
+                             )}
+                          </td>
                           <td className="py-2 px-3 text-right">
                              {isEditingMonthlyMode ? (
                                  <NumberInput 
-                                  className={`w-full p-1 border rounded text-right focus:ring-2 focus:ring-blue-500 outline-none ${isHoursOverridden ? 'border-blue-300 font-bold text-blue-900' : 'border-gray-200 text-gray-600'}`}
+                                  className={`w-full p-1 border rounded text-right focus:ring-2 focus:ring-blue-500 outline-none bg-white ${isHoursOverridden ? 'border-blue-300 font-bold text-blue-900' : 'border-gray-200 text-gray-600'}`}
                                   value={displayHours}
                                   onChange={(val) => {
                                      const newData = { ...editingEmp.monthlyData };
                                      newData[m.key] = { 
                                         cost: costOverride ?? editingEmp.defaultMonthlyCost, 
-                                        monthlyHours: val 
+                                        monthlyHours: val,
+                                        bonus: bonusVal
                                      };
                                      setEditingEmp({ ...editingEmp, monthlyData: newData });
                                   }}
@@ -273,60 +324,83 @@ const EmployeeMaster: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
+    <div className="flex flex-col h-full gap-6">
+      <div className="flex justify-between items-center flex-shrink-0">
         <h2 className="text-xl font-bold text-gray-700">従業員マスタ ({currentTerm}年11月期)</h2>
         <button onClick={handleCreateNew} className="flex items-center px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-bold shadow-sm">
           <Plus className="w-4 h-4 mr-1"/> 新規従業員登録
         </button>
       </div>
 
-      <div className="bg-white rounded shadow overflow-hidden border border-gray-200">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">氏名</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">契約形態</th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">基本報酬</th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">標準稼働</th>
-              <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">操作</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {employees.map(emp => (
-              <tr key={emp.id} className="hover:bg-gray-50">
-                <td className="px-6 py-4 flex items-center">
-                  <div className="bg-blue-100 p-2 rounded-full mr-3 text-blue-600">
-                    <User className="w-4 h-4" />
-                  </div>
-                  <span className="font-bold text-gray-700">{emp.name}</span>
-                </td>
-                <td className="px-6 py-4 text-sm text-gray-600">
-                  <span className="px-2 py-1 bg-gray-100 rounded text-xs border border-gray-200">{emp.contractType}</span>
-                </td>
-                <td className="px-6 py-4 text-right text-sm font-mono text-gray-900">
-                  {formatCurrency(emp.defaultMonthlyCost)}
-                </td>
-                <td className="px-6 py-4 text-right text-sm font-mono text-gray-900">
-                  {emp.defaultMonthlyHours}h
-                </td>
-                <td className="px-6 py-4 text-center">
-                   <div className="flex justify-center gap-4">
-                     <button onClick={() => handleOpenEdit(emp)} className="text-blue-600 hover:text-blue-800 font-bold text-sm flex items-center">
-                       <Settings className="w-4 h-4 mr-1" /> 設定
-                     </button>
-                     <button onClick={() => deleteEmployee(emp.id)} className="text-red-400 hover:text-red-600">
-                        <Trash2 className="w-4 h-4" />
-                     </button>
-                   </div>
-                </td>
+      <div className="bg-white rounded shadow border border-gray-200 flex-1 overflow-hidden flex flex-col min-h-0">
+        <div className="overflow-auto flex-1">
+          <table className="min-w-[900px] w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase bg-gray-50">氏名</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase bg-gray-50">役職</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase bg-gray-50">アサイン案件 (デリバリー中)</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase bg-gray-50">契約形態</th>
+                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase bg-gray-50">基本報酬</th>
+                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase bg-gray-50">標準稼働 (月)</th>
+                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase bg-gray-50">操作</th>
               </tr>
-            ))}
-            {employees.length === 0 && (
-              <tr><td colSpan={5} className="text-center py-8 text-gray-400">従業員が登録されていません</td></tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {employees.map(emp => {
+                // Find assigned projects that are currently "Ordered" (Active/Delivery)
+                const activeProjects = projects.filter(p => 
+                  p.status === ProjectStatus.Ordered && 
+                  p.assignments?.some(a => a.employeeId === emp.id)
+                );
+
+                return (
+                <tr key={emp.id} className="hover:bg-gray-50">
+                  <td className="px-6 py-4 flex items-center">
+                    <div className="bg-blue-100 p-2 rounded-full mr-3 text-blue-600">
+                      <User className="w-4 h-4" />
+                    </div>
+                    <span className="font-bold text-gray-700">{emp.name}</span>
+                  </td>
+                  <td className="px-6 py-4 text-sm text-gray-600">
+                      <span className="bg-gray-50 border px-2 py-1 rounded text-xs">{emp.role || '-'}</span>
+                  </td>
+                  <td className="px-6 py-4 text-sm text-gray-600 max-w-xs">
+                    <div className="flex flex-wrap gap-1">
+                      {activeProjects.length > 0 ? activeProjects.map(p => (
+                        <span key={p.id} className="bg-green-50 text-green-700 border border-green-200 px-2 py-0.5 rounded text-xs truncate max-w-[150px]" title={p.projectName}>
+                          {p.clientName}
+                        </span>
+                      )) : <span className="text-gray-300">-</span>}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 text-sm text-gray-600">
+                    <span className="px-2 py-1 bg-gray-100 rounded text-xs border border-gray-200">{emp.contractType}</span>
+                  </td>
+                  <td className="px-6 py-4 text-right text-sm font-mono text-gray-900">
+                    {formatCurrency(emp.defaultMonthlyCost)}
+                  </td>
+                  <td className="px-6 py-4 text-right text-sm font-mono text-gray-900">
+                    {emp.defaultMonthlyHours}h
+                  </td>
+                  <td className="px-6 py-4 text-center">
+                     <div className="flex justify-center gap-4">
+                       <button onClick={() => handleOpenEdit(emp)} className="text-blue-600 hover:text-blue-800 font-bold text-sm flex items-center">
+                         <Settings className="w-4 h-4 mr-1" /> 設定
+                       </button>
+                       <button onClick={() => deleteEmployee(emp.id)} className="text-red-400 hover:text-red-600">
+                          <Trash2 className="w-4 h-4" />
+                       </button>
+                     </div>
+                  </td>
+                </tr>
+              )})}
+              {employees.length === 0 && (
+                <tr><td colSpan={7} className="text-center py-8 text-gray-400">従業員が登録されていません</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {renderSettingsModal()}
