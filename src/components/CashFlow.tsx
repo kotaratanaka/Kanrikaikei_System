@@ -224,10 +224,18 @@ const CashFlow: React.FC<CashFlowProps> = ({ onNavigate }) => {
                          <span className="font-mono text-gray-800">{formatCurrency(d.cashIn)}</span>
                       </div>
                       {d.financialIn > 0 && (
-                          <div className="flex justify-between text-xs">
-                             <span className="text-green-600 font-medium">調達等</span>
-                             <span className="font-mono text-green-700 font-bold">{formatCurrency(d.financialIn)}</span>
-                          </div>
+                          <>
+                              <div className="flex justify-between text-xs border-t border-green-100 pt-1 mt-1">
+                                 <span className="text-green-600 font-medium">調達等 計</span>
+                                 <span className="font-mono text-green-700 font-bold">{formatCurrency(d.financialIn)}</span>
+                              </div>
+                              {d.financialInItems && d.financialInItems.map((item: any, idx: number) => (
+                                  <div key={idx} className="flex justify-between text-[10px] pl-2">
+                                      <span className="text-gray-500 truncate max-w-[100px]">{item.name}</span>
+                                      <span className="font-mono text-green-600">{formatCurrency(item.amount)}</span>
+                                  </div>
+                              ))}
+                          </>
                       )}
                   </div>
                </div>
@@ -297,9 +305,10 @@ const CashFlow: React.FC<CashFlowProps> = ({ onNavigate }) => {
     amount: React.ReactNode, 
     details: React.ReactNode,
     action: React.ReactNode,
-    isSystem: boolean = false
+    isSystem: boolean = false,
+    key?: string | number
   ) => (
-      <tr className="hover:bg-gray-50">
+      <tr key={key} className="hover:bg-gray-50">
         <td className="px-4 py-3">
             <div className="flex items-center">
                 {isSystem && <Lock className="w-3 h-3 text-gray-400 mr-2" />}
@@ -625,7 +634,8 @@ const CashFlow: React.FC<CashFlowProps> = ({ onNavigate }) => {
                                         <button onClick={() => onNavigate?.('projects')} className="text-blue-500 hover:text-blue-700" title="案件マスタへ移動">
                                             <ExternalLink className="w-4 h-4 mx-auto" />
                                         </button>,
-                                        true
+                                        true,
+                                        p.id
                                     );
                                 })}
 
@@ -643,7 +653,9 @@ const CashFlow: React.FC<CashFlowProps> = ({ onNavigate }) => {
                                         </div>,
                                         <button onClick={() => handleDeleteItem(item.id)} className="text-red-400 hover:text-red-600">
                                             <Trash2 className="w-4 h-4 mx-auto" />
-                                        </button>
+                                        </button>,
+                                        false,
+                                        item.id
                                     );
                                 })}
 
@@ -668,7 +680,8 @@ const CashFlow: React.FC<CashFlowProps> = ({ onNavigate }) => {
                                     <button onClick={() => onNavigate?.('employees')} className="text-blue-500 hover:text-blue-700" title="従業員マスタへ移動">
                                          <ExternalLink className="w-4 h-4 mx-auto" />
                                     </button>,
-                                    true
+                                    true,
+                                    'labor-cost'
                                 )}
                                 
                                 {/* Manual Outflows */}
@@ -685,7 +698,9 @@ const CashFlow: React.FC<CashFlowProps> = ({ onNavigate }) => {
                                         </div>,
                                         <button onClick={() => handleDeleteItem(item.id)} className="text-red-400 hover:text-red-600">
                                             <Trash2 className="w-4 h-4 mx-auto" />
-                                        </button>
+                                        </button>,
+                                        false,
+                                        item.id
                                     );
                                 })}
                                 {manualOutflows.length === 0 && (

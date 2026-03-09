@@ -538,6 +538,7 @@ export const generateProjections = (projects: Project[], employees: Employee[], 
         let taxRepayment = 0;
         let investment = 0;
         let financialIn = 0;
+        const financialInItems: { name: string, amount: number }[] = [];
 
         settings.cashFlowItems.forEach(item => {
             let occurs = false;
@@ -577,7 +578,10 @@ export const generateProjections = (projects: Project[], employees: Employee[], 
                 if (item.category === CashFlowCategory.OperatingExpense) sga += amountToAdd;
                 else if (item.category === CashFlowCategory.Tax || item.category === CashFlowCategory.LoanRepayment) taxRepayment += amountToAdd;
                 else if (item.category === CashFlowCategory.Investment) investment += amountToAdd;
-                else if (item.category === CashFlowCategory.LoanIn) financialIn += amountToAdd;
+                else if (item.category === CashFlowCategory.LoanIn) {
+                    financialIn += amountToAdd;
+                    financialInItems.push({ name: item.name, amount: amountToAdd });
+                }
                 else sga += amountToAdd;
             }
         });
@@ -605,6 +609,7 @@ export const generateProjections = (projects: Project[], employees: Employee[], 
             investment,
             cashIn,
             financialIn,
+            financialInItems,
             totalCashIn,
             totalCashOut,
             cashBalance: currentCash,

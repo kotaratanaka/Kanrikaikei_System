@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { useData } from '../context/AppContext';
 import { Project, ProjectType, ProjectStatus, RevenueRecognitionMethod, BillingMilestone } from '../types';
 import { formatCurrency, getTermDateRange, calculateExactMonths, generateId, calculateDayDiff } from '../utils';
-import { Plus, X, Archive, ArrowLeft, Tag, Trash2, Lock, Search } from 'lucide-react';
+import { Plus, X, Archive, ArrowLeft, Tag, Trash2, Lock, Search, Pencil } from 'lucide-react';
 import { NumberInput } from './NumberInput';
 
 const ProjectMaster: React.FC = () => {
@@ -24,6 +24,8 @@ const ProjectMaster: React.FC = () => {
   const [newCategoryName, setNewCategoryName] = useState('');
   const [isAddingDetail, setIsAddingDetail] = useState(false);
   const [newDetailName, setNewDetailName] = useState('');
+  const [isEditingDetail, setIsEditingDetail] = useState(false);
+  const [editingDetailName, setEditingDetailName] = useState('');
 
   // Autosuggest Data
   const uniqueClients = Array.from(new Set(projects.map(p => p.clientName))).sort();
@@ -158,6 +160,42 @@ const ProjectMaster: React.FC = () => {
     setForm(prev => ({ ...prev, leadSourceDetail: newDetailName.trim() }));
     setNewDetailName('');
     setIsAddingDetail(false);
+  };
+
+  const handleUpdateDetail = () => {
+    if (!editingDetailName.trim() || !form.leadSourceCategory || !form.leadSourceDetail) return;
+    
+    const category = form.leadSourceCategory;
+    const oldName = form.leadSourceDetail;
+    const newName = editingDetailName.trim();
+    
+    if (oldName === newName) {
+        setIsEditingDetail(false);
+        return;
+    }
+
+    const currentDetails = leadSourceOptions[category] || [];
+    if (currentDetails.includes(newName)) {
+        alert('既に存在します');
+        return;
+    }
+
+    // 1. Update Settings (Master List)
+    const newDetails = currentDetails.map(d => d === oldName ? newName : d);
+    const newOptions = { ...leadSourceOptions, [category]: newDetails };
+    updateSettings({ ...settings, leadSourceOptions: newOptions });
+
+    // 2. Update Active Form
+    setForm(prev => ({ ...prev, leadSourceDetail: newName }));
+
+    // 3. Update Existing Projects (Data Consistency)
+    projects.forEach(p => {
+        if (p.leadSourceCategory === category && p.leadSourceDetail === oldName) {
+            updateProject({ ...p, leadSourceDetail: newName });
+        }
+    });
+
+    setIsEditingDetail(false);
   };
 
   // Logic to handle default settings when Project Type changes
@@ -921,16 +959,25 @@ const ProjectMaster: React.FC = () => {
                   <div>
                     <div className="flex justify-between items-center mb-1">
                       <label className="text-xs font-bold text-gray-600">詳細・媒体名 (小項目)</label>
-                       {!isAddingDetail && form.leadSourceCategory && (
-                        <button onClick={() => setIsAddingDetail(true)} className="text-[10px] text-blue-600 hover:underline flex items-center">
-                          <Plus className="w-3 h-3 mr-0.5" /> 追加
-                        </button>
-                      )}
-                      {isAddingDetail && (
-                         <button onClick={() => setIsAddingDetail(false)} className="text-[10px] text-gray-400 hover:text-gray-600">
-                           キャンセル
-                         </button>
-                      )}
+                      <div className="flex gap-2">
+                          {!isAddingDetail && !isEditingDetail && form.leadSourceCategory && (
+                            <>
+                                {form.leadSourceDetail && (
+                                    <button onClick={() => { setEditingDetailName(form.leadSourceDetail || ''); setIsEditingDetail(true); }} className="text-[10px] text-gray-500 hover:text-blue-600 flex items-center">
+                                      <Pencil className="w-3 h-3 mr-0.5" /> 編集
+                                    </button>
+                                )}
+                                <button onClick={() => setIsAddingDetail(true)} className="text-[10px] text-blue-600 hover:underline flex items-center">
+                                  <Plus className="w-3 h-3 mr-0.5" /> 追加
+                                </button>
+                            </>
+                          )}
+                          {(isAddingDetail || isEditingDetail) && (
+                             <button onClick={() => { setIsAddingDetail(false); setIsEditingDetail(false); }} className="text-[10px] text-gray-400 hover:text-gray-600">
+                               キャンセル
+                             </button>
+                          )}
+                      </div>
                     </div>
 
                     {isAddingDetail ? (
@@ -944,6 +991,18 @@ const ProjectMaster: React.FC = () => {
                            onKeyDown={e => e.key === 'Enter' && handleAddDetail()}
                          />
                          <button onClick={handleAddDetail} className="bg-blue-600 text-white px-3 py-1 rounded text-xs font-bold">追加</button>
+                      </div>
+                    ) : isEditingDetail ? (
+                       <div className="flex gap-2">
+                         <input 
+                           className="flex-1 border p-2 rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                           placeholder="項目名を編集"
+                           value={editingDetailName}
+                           onChange={e => setEditingDetailName(e.target.value)}
+                           autoFocus
+                           onKeyDown={e => e.key === 'Enter' && handleUpdateDetail()}
+                         />
+                         <button onClick={handleUpdateDetail} className="bg-green-600 text-white px-3 py-1 rounded text-xs font-bold">保存</button>
                       </div>
                     ) : (
                       <>
